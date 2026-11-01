@@ -1,0 +1,38 @@
+menu "CYD-TERM"
+
+    config TERM_WIFI_SSID
+        string "WiFi SSID"
+        default ""
+
+    config TERM_WIFI_PASSWORD
+        string "WiFi password"
+        default ""
+
+    config TERM_TZ
+        string "Zona horaria (POSIX TZ)"
+        default "<-03>3"
+
+	config TERM_LAT
+        string "Latitud para el clima"
+        default "-32.89"
+
+    config TERM_LON
+        string "Longitud para el clima"
+        default "-68.84"
+
+    config TERM_WEATHER_PERIOD_MIN
+        int "Periodo de actualizacion del clima (minutos)"
+        default 10
+        range 1 120
+        
+    config TERM_SAVER_TIMEOUT_S
+        int "Segundos sin uso para el salvapantallas (0 = desactivado)"
+        default 120
+        range 0 3600
+
+    config TERM_SAVER_BRIGHTNESS
+        int "Brillo del salvapantallas (%)"
+        default 50
+        range 5 100
+        
+endmenu
