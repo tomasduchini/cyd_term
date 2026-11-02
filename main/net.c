@@ -16,8 +16,15 @@
 #include "esp_log.h"
 #include "weather.h"
 #include "netmon.h"
+#include "provision.h"
 
 #define BIT_CONNECTED BIT0
+#define CONNECT_TIMEOUT_MS 30000  // sin conexion en este tiempo: modo configuracion
+#define PROV_RETRY_MS      60000  // en modo configuracion, cada cuanto reintentar la red guardada
+
+static volatile bool s_prov;      // modo configuracion activo: no reconectar solo
+static bool s_have_creds, s_force;
+static char s_ssid[PROV_SSID_MAX], s_pass[PROV_PASS_MAX];
 
 static EventGroupHandle_t s_ev;
 static char s_ip[16];
@@ -26,12 +33,12 @@ static char s_ip[16];
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        if (s_have_creds && !s_prov) esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         xEventGroupClearBits(s_ev, BIT_CONNECTED);
         wifi_event_sta_disconnected_t *d = data;
         ESP_LOGW("net", "desconectado, reason=%d", d->reason);
-        esp_wifi_connect();
+        if (!s_prov) esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = data;
         snprintf(s_ip, sizeof s_ip, IPSTR, IP2STR(&e->ip_info.ip));
@@ -43,10 +50,29 @@ static void net_task(void *arg)
 {
     char line[48];
 
-    con_type(CON_C_DIM "wifi: conectando a " CONFIG_TERM_WIFI_SSID "\n");
-    while (!(xEventGroupWaitBits(s_ev, BIT_CONNECTED, pdFALSE, pdTRUE,
-                                 pdMS_TO_TICKS(10000)) & BIT_CONNECTED)) {
-        con_type(CON_C_WARN "wifi: sin conexion, reintento\n");
+    bool connected = false;
+    if (!s_prov) {
+        snprintf(line, sizeof line, CON_C_DIM "wifi: conectando a %.24s\n", s_ssid);
+        con_type(line);
+        connected = xEventGroupWaitBits(s_ev, BIT_CONNECTED, pdFALSE, pdTRUE,
+                                        pdMS_TO_TICKS(CONNECT_TIMEOUT_MS)) & BIT_CONNECTED;
+        if (!connected) con_type(CON_C_WARN "wifi: no conecta\n");
+    } else if (!s_have_creds) {
+        con_type(CON_C_WARN "wifi: sin red configurada\n");
+    }
+
+    if (!connected) {
+        s_prov = true;
+        prov_start();
+        // con red guardada (y sin pedido manual) se reintenta cada tanto:
+        // cubre el caso del router que vuelve mas tarde despues de un corte de luz
+        bool retry = s_have_creds && !s_force;
+        while (!(xEventGroupWaitBits(s_ev, BIT_CONNECTED, pdFALSE, pdTRUE,
+                                     pdMS_TO_TICKS(PROV_RETRY_MS)) & BIT_CONNECTED)) {
+            if (retry) esp_wifi_connect();
+        }
+        prov_stop();
+        s_prov = false;
     }
     snprintf(line, sizeof line, CON_C_TEXT "wifi: ok " CON_C_HI "%s\n", s_ip);
     con_type(line);
@@ -98,8 +124,11 @@ void net_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_event, NULL));
 
     wifi_config_t sta = { 0 };
-    strlcpy((char *)sta.sta.ssid, CONFIG_TERM_WIFI_SSID, sizeof sta.sta.ssid);
-    strlcpy((char *)sta.sta.password, CONFIG_TERM_WIFI_PASSWORD, sizeof sta.sta.password);
+    s_have_creds = prov_load(s_ssid, s_pass);
+    s_force = prov_take_force();
+    s_prov = s_force || !s_have_creds;  // antes de esp_wifi_start: STA_START no debe conectar
+    strlcpy((char *)sta.sta.ssid, s_ssid, sizeof sta.sta.ssid);
+    strlcpy((char *)sta.sta.password, s_pass, sizeof sta.sta.password);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta));
 

@@ -16,6 +16,9 @@
 #include "esp_log.h"
 #include "term.h"
 #include "xpt2046.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "provision.h"
 
 #define BTN_GPIO          GPIO_NUM_0
 #define BTN_LOCK_FRAMES   6   // ~180 ms sin tocar el boton para habilitar otro cambio
@@ -44,6 +47,12 @@ static const page_t s_pages[] = {
 static int s_cur;
 static int s_btn_prev = 1;
 static int s_btn_lock;
+#define BTN_LONG_US (3 * 1000000LL)
+
+typedef enum { BTN_NONE, BTN_SHORT, BTN_LONG } btn_ev_t;
+
+static bool s_btn_held, s_btn_long_fired;
+static int64_t s_btn_down_us;
 static bool s_saver;
 static int64_t s_last_input_us;
 static bool s_transition;
@@ -73,17 +82,34 @@ void pages_init(void)
     enter(PAGE_MONITOR);
 }
 
-static bool button_pressed(void)  // flanco de bajada con antirrebote
+// Toque corto: evento al soltar. Toque largo: evento al cumplirse BTN_LONG_US, una sola vez.
+static btn_ev_t button_event(void)
 {
     int lvl = gpio_get_level(BTN_GPIO);
-    bool pressed = (lvl == 0 && s_btn_prev == 1 && s_btn_lock == 0);
+    int64_t now = esp_timer_get_time();
+    btn_ev_t ev = BTN_NONE;
+
+    if (lvl == 0 && s_btn_prev == 1 && s_btn_lock == 0) {  // apretado
+        s_btn_held = true;
+        s_btn_long_fired = false;
+        s_btn_down_us = now;
+    }
+    if (s_btn_held && lvl == 0 && !s_btn_long_fired && now - s_btn_down_us >= BTN_LONG_US) {
+        s_btn_long_fired = true;
+        ev = BTN_LONG;
+    }
+    if (s_btn_held && lvl == 1 && s_btn_prev == 0) {  // soltado
+        s_btn_held = false;
+        if (!s_btn_long_fired) ev = BTN_SHORT;
+    }
+
     if (lvl == 0) {
         s_btn_lock = BTN_LOCK_FRAMES;
     } else if (s_btn_lock > 0) {
         s_btn_lock--;
     }
     s_btn_prev = lvl;
-    return pressed;
+    return ev;
 }
 
 static input_t touch_input(void)  // flanco de toque con antirrebote; mitad izq = anterior
@@ -126,7 +152,15 @@ void pages_step(void)
         return;
     }
 
-    input_t in = button_pressed() ? IN_NEXT : IN_NONE;
+    btn_ev_t b = button_event();
+    if (b == BTN_LONG) {  // reinicio en modo configuracion WiFi
+        term_clear(0x0000);
+        term_print(5, 7, "reiniciando en modo config...", 0xFD80, 0x0000);
+        term_flush();
+        vTaskDelay(pdMS_TO_TICKS(800));
+        prov_request_restart();
+    }
+    input_t in = (b == BTN_SHORT) ? IN_NEXT : IN_NONE;
     input_t t = touch_input();  // se lee siempre, para mantener el estado del flanco
     if (in == IN_NONE) in = t;
 
