@@ -15,6 +15,6 @@ typedef struct {
     int first_hour;               // hora local del primer valor de hourly
 } weather_t;
 
-void weather_update(void); // llamar solo desde la tarea net (único escritor de la ventana)
+bool weather_update(void); // true si actualizo los datos; solo tarea net
 bool weather_get(weather_t *out);  // copia thread-safe; false si todavia no hay datos
 const char *weather_text(int code);

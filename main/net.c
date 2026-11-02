@@ -15,6 +15,7 @@
 #include "net.h"
 #include "esp_log.h"
 #include "weather.h"
+#include "netmon.h"
 
 #define BIT_CONNECTED BIT0
 
@@ -49,6 +50,7 @@ static void net_task(void *arg)
     }
     snprintf(line, sizeof line, CON_C_TEXT "wifi: ok " CON_C_HI "%s\n", s_ip);
     con_type(line);
+    netmon_start();
 
     con_type(CON_C_DIM "ntp: sincronizando...\n");
     esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
@@ -58,9 +60,19 @@ static void net_task(void *arg)
     }
     con_type(CON_C_TEXT "ntp: hora sincronizada\n" CON_PAUSE_1S CON_PAUSE_1S CON_PAUSE_1S CON_CLEAR CON_EVENT);
 
+    const int period_s = CONFIG_TERM_WEATHER_PERIOD_MIN * 60;
+    int retry_s = 10;
     while (1) {
-        weather_update();
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_TERM_WEATHER_PERIOD_MIN * 60 * 1000));
+        if (weather_update()) {
+            retry_s = 10;
+            vTaskDelay(pdMS_TO_TICKS(period_s * 1000));
+        } else {
+            snprintf(line, sizeof line, CON_C_DIM "clima: reintento en %ds\n", retry_s);
+            con_type(line);
+            vTaskDelay(pdMS_TO_TICKS(retry_s * 1000));
+            retry_s *= 2;
+            if (retry_s > period_s) retry_s = period_s;
+        }
     }
 }
 

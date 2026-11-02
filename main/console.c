@@ -16,15 +16,15 @@
 #define PAUSE_FRAMES 33     // ~1 s a 30 ms/frame
 
 #define X0    (FRAME_C0 + 1)
-#define Y0    (FRAME_R0 + 1)
+#define Y0    (FRAME_R0 + 8)               // debajo del separador " log " de monitor
 #define CON_W (FRAME_C1 - FRAME_C0 - 1)
-#define CON_H (FRAME_R1 - FRAME_R0 - 1)
+#define CON_H (FRAME_R1 - Y0)              // 6 filas
 
 static const uint16_t s_palette[] = {
-    0x07FF,  // \x01 texto (cian)
-    0xCFFF,  // \x02 resaltado
-    0xFD20,  // \x03 warning (ambar)
-    0x0410,  // \x04 tenue
+	0x3EF0,  // \x01 texto (verde)
+	0xCFFB,  // \x02 resaltado
+	0xFD80,  // \x03 warning (ambar)
+	0x5CCD,  // \x04 tenue
 };
 
 static uint8_t  s_ch[CON_H][CON_W];

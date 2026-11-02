@@ -16,7 +16,7 @@ static const uint8_t s_digits[11][5] = {
 
 static bool px(int d, int y, int x)  // y: 0..4, x: 0..2
 {
-    if (y > 4) return false;
+    if (d < 0 || y > 4) return false;  // d < 0: digito en blanco
     return (s_digits[d][y] >> (2 - x)) & 1;
 }
 
@@ -58,4 +58,24 @@ void bigclock_draw(int c, int r, const struct tm *tm, bool synced, bool colon_on
     big_colon(c + 8,  r, colon_on, fg);
     big_digit(c + 10, r, d[2], fg);
     big_digit(c + 14, r, d[3], fg);
+}
+
+void bignum_draw(int c, int r, int value, int ndigits, uint16_t fg)
+{
+    int max = 1;
+    for (int i = 0; i < ndigits; i++) max *= 10;
+    if (value >= max) value = max - 1;
+
+    for (int j = 0; j < ndigits; j++) {  // j = 0 es el digito de la izquierda
+        int k = ndigits - 1 - j;          // posicion desde la derecha
+        int d;
+        if (value < 0) {
+            d = DIG_DASH;
+        } else {
+            int p = 1;
+            for (int i = 0; i < k; i++) p *= 10;
+            d = (k > 0 && value < p) ? -1 : (value / p) % 10;  // ceros a la izquierda en blanco
+        }
+        big_digit(c + 4 * j, r, d, fg);
+    }
 }

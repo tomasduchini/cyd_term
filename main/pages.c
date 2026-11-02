@@ -10,6 +10,9 @@
 #include "esp_timer.h"
 #include "sdkconfig.h"
 #include "saver.h"
+#include "page_wifi.h"
+#include "page_mon.h"
+#include "page_pc.h"
 
 #define BTN_GPIO        GPIO_NUM_0
 #define BTN_LOCK_FRAMES 6   // ~180 ms sin tocar el boton para habilitar otro cambio
@@ -23,22 +26,11 @@ typedef struct {
     bool status;
 } page_t;
 
-static void mon_enter(void) { con_show(); }
-static void mon_leave(void) { con_hide(); }
-
-static void wip_enter(void)
-{
-    const char *msg = "en construccion";
-    int w = FRAME_C1 - FRAME_C0 - 1;
-    int c = FRAME_C0 + 1 + (w - (int)strlen(msg)) / 2;
-    term_print(c, (FRAME_R0 + FRAME_R1) / 2, msg, 0x8410, 0x0000);
-}
-
 static const page_t s_pages[] = {
     { "inicio",  0x07FF, home_enter, home_step, NULL,      false },  // cian
-    { "pc",      0xFD20, wip_enter,  NULL,      NULL,      true  },  // ambar
-    { "wifi",    0xF81F, wip_enter,  NULL,      NULL,      true  },  // magenta
-    { "monitor", 0x07E0, mon_enter,  NULL,      mon_leave, true  },  // verde
+    { "pc",      0xFD80, pc_enter,   pc_step,   NULL,      true  },  // ambar
+    { "wifi",    0xE21F, wifi_enter, wifi_step, NULL,      true  },  // magenta
+    { "monitor", 0x3EF0, mon_enter,  mon_step,  mon_leave, true  },  // verde
 };
 #define N_PAGES      ((int)(sizeof s_pages / sizeof s_pages[0]))
 #define PAGE_HOME    0

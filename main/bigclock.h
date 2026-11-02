@@ -7,3 +7,4 @@
 #define BIGCLOCK_H 3
 
 void bigclock_draw(int c, int r, const struct tm *tm, bool synced, bool colon_on, uint16_t fg);
+void bignum_draw(int c, int r, int value, int ndigits, uint16_t fg);  // value < 0: guiones

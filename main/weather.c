@@ -101,7 +101,7 @@ const char *weather_text(int c)
     return "?";
 }
 
-void weather_update(void)
+bool weather_update(void)
 {
     static char body[2048];
     char url[384];
@@ -126,7 +126,7 @@ void weather_update(void)
     if (err != ESP_OK || status != 200) {
         snprintf(line, sizeof line, CON_C_WARN "clima: %s (%d)\n", esp_err_to_name(err), status);
         con_type(line);
-        return;
+        return false;
     }
 
     const char *cur    = strstr(body, "\"current\":{");
@@ -149,7 +149,7 @@ void weather_update(void)
         !json_hhmm(daily, "sunset", w.sunset)) {
         ESP_LOGW("weather", "parseo fallido, %d bytes:\n%s", resp.len, body);
         con_type(CON_C_WARN "clima: respuesta invalida\n");
-        return;
+        return false;
     }
     w.code = (int)code;
     w.is_day = isday > 0.5f;
@@ -166,6 +166,7 @@ void weather_update(void)
     snprintf(line, sizeof line, CON_C_DIM "[%02d:%02d] " CON_C_TEXT "clima: %.1fC %s\n",
              tm.tm_hour, tm.tm_min, w.temp, weather_text(w.code));
     con_type(line);
+    return true;
 }
 
 bool weather_get(weather_t *out)
