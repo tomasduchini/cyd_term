@@ -15,3 +15,6 @@ void term_set_fg(int col, int row, uint16_t fg);
 void term_set_ch(int col, int row, uint8_t ch);
 void term_print(int col, int row, const char *s, uint16_t fg, uint16_t bg);
 void term_flush(void);
+void term_transition_begin(void);         // foto de la pantalla actual (antes de dibujar lo nuevo)
+void term_transition_start(int frames);   // foto del contenido nuevo ya dibujado; arranca la animacion
+bool term_transition_step(void);          // avanza un frame; false cuando termino

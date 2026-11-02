@@ -17,6 +17,7 @@
 #include "backlight.h"
 #include "page_mon.h"
 #include "pcstat.h"
+#include "freertos/task.h"
 
 #define LCD_HOST     SPI2_HOST
 #define PIN_SCLK     14
@@ -82,7 +83,7 @@ void app_main(void) {
 				net_start();
 			}
 		} else {
-			con_step();
+            if (!pages_busy()) con_step();  // la consola espera durante la transicion
 			pages_step();
 			time_t now = time(NULL);
 			if (now != last_clock) {

@@ -4,6 +4,7 @@
 #include "esp_attr.h"
 #include "term.h"
 #include "font8x16.h"
+#include "esp_random.h"
 
 #define CELL_W 8
 #define CELL_H 16
@@ -21,6 +22,15 @@ static esp_lcd_panel_handle_t s_panel;
 static uint16_t *s_buf[NBUF];
 static int s_buf_idx;
 static SemaphoreHandle_t s_buf_sem;
+
+typedef struct {
+    uint8_t ch;
+    uint16_t fg, bg;
+} tcell_t;
+
+static tcell_t s_old[TERM_ROWS][TERM_COLS], s_new[TERM_ROWS][TERM_COLS];
+static uint8_t s_reveal[TERM_ROWS][TERM_COLS];  // frame de revelado; 0xFF = no se anima
+static int s_tr_frame = -1, s_tr_frames;
 
 IRAM_ATTR bool term_on_trans_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_data_t *edata, void *user_ctx)
 {
@@ -123,4 +133,57 @@ void term_flush(void)
             }
         }
     }
+}
+
+void term_transition_begin(void)
+{
+    for (int r = 0; r < TERM_ROWS; r++) {
+        for (int c = 0; c < TERM_COLS; c++) {
+            s_old[r][c] = (tcell_t){ cells[r][c].ch, cells[r][c].fg, cells[r][c].bg };
+        }
+    }
+}
+
+void term_transition_start(int frames)
+{
+    s_tr_frames = frames;
+    for (int r = 0; r < TERM_ROWS; r++) {
+        for (int c = 0; c < TERM_COLS; c++) {
+            const cell_t *n = &cells[r][c];
+            const tcell_t *o = &s_old[r][c];
+            s_new[r][c] = (tcell_t){ n->ch, n->fg, n->bg };
+
+            bool same = o->ch == n->ch && o->fg == n->fg && o->bg == n->bg;
+            bool visible = o->ch != ' ' || n->ch != ' ';
+            // ola de izquierda a derecha con borde irregular
+            s_reveal[r][c] = (same || !visible) ? 0xFF
+                           : (uint8_t)(c * (frames - 4) / TERM_COLS + esp_random() % 4);
+        }
+    }
+    s_tr_frame = 0;
+}
+
+bool term_transition_step(void)
+{
+    if (s_tr_frame < 0) return false;
+
+    for (int r = 0; r < TERM_ROWS; r++) {
+        for (int c = 0; c < TERM_COLS; c++) {
+            uint8_t rv = s_reveal[r][c];
+            if (rv == 0xFF) continue;
+            const tcell_t *t = &s_new[r][c];
+            if (s_tr_frame >= rv) {
+                term_put(c, r, t->ch, t->fg, t->bg);
+            } else if ((s_tr_frame & 1) == 0) {  // el ruido cambia cada 2 frames
+                const tcell_t *src = (t->ch != ' ') ? t : &s_old[r][c];
+                term_put(c, r, 0x21 + esp_random() % 94, src->fg, src->bg);
+            }
+        }
+    }
+
+    if (++s_tr_frame >= s_tr_frames) {
+        s_tr_frame = -1;  // en el ultimo frame ya se revelaron todas
+        return false;
+    }
+    return true;
 }
