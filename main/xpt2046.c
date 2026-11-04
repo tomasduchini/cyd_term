@@ -47,12 +47,59 @@ static int xpt_read(uint8_t cmd)  // una conversion completa por bit-bang, SPI m
     return (v >> 3) & 0xFFF;  // mismo formato que antes: 12 bits
 }
 
-static int map_axis(int v, int lo, int hi, int out, bool inv)
+static xpt2046_cal_t s_cal;
+
+static int clampi(int v, int lo, int hi)
 {
-    int r = (v - lo) * out / (hi - lo);
-    if (r < 0) r = 0;
-    if (r > out - 1) r = out - 1;
-    return inv ? out - 1 - r : r;
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static void default_cal(void)  // equivalente a la calibracion fija anterior
+{
+    float sx = (float)SCREEN_W / (T_X_MAX - T_X_MIN);
+    float sy = (float)SCREEN_H / (T_Y_MAX - T_Y_MIN);
+    s_cal.ax = T_INVERT_X ? -sx : sx;
+    s_cal.bx = T_INVERT_X ? (SCREEN_W - 1) + sx * T_X_MIN : -sx * T_X_MIN;
+    s_cal.ay = T_INVERT_Y ? -sy : sy;
+    s_cal.by = T_INVERT_Y ? (SCREEN_H - 1) + sy * T_Y_MIN : -sy * T_Y_MIN;
+}
+
+void xpt2046_set_cal(const xpt2046_cal_t *c)
+{
+    s_cal = *c;
+}
+
+// Lectura cruda: presion + promedio de 4 posiciones, con el intercambio de ejes aplicado
+static bool sample(int *rx_out, int *ry_out, int *z_out)
+{
+    int z1 = xpt_read(0xB1);
+    int z2 = xpt_read(0xC1);
+    int z = z1 + 4095 - z2;
+    if (z < T_Z_MIN) {
+        xpt_read(0xD0);
+        return false;
+    }
+    int rx = 0, ry = 0;
+    for (int i = 0; i < 4; i++) {
+        rx += xpt_read(0xD1);
+        ry += xpt_read(0x91);
+    }
+    xpt_read(0xD0);
+    rx /= 4;
+    ry /= 4;
+#if T_SWAP_XY
+    int tmp = rx; rx = ry; ry = tmp;
+#endif
+    *rx_out = rx;
+    *ry_out = ry;
+    *z_out = z;
+    return true;
+}
+
+bool xpt2046_read_raw(int *rx, int *ry)
+{
+    int z;
+    return sample(rx, ry, &z);
 }
 
 void xpt2046_init(void)
@@ -72,34 +119,17 @@ void xpt2046_init(void)
     gpio_set_level(T_CS, 1);
     gpio_set_level(T_SCLK, 0);
     xpt_read(0xD0);  // power-down entre conversiones, PENIRQ habilitado
+    default_cal();
 }
 
 bool xpt2046_read(xpt2046_point_t *p)
 {
-    int z1 = xpt_read(0xB1);
-    int z2 = xpt_read(0xC1);
-    int z = z1 + 4095 - z2;
-    if (z < T_Z_MIN) {
-        xpt_read(0xD0);
-        return false;
-    }
-
-    int rx = 0, ry = 0;
-    for (int i = 0; i < 4; i++) {
-        rx += xpt_read(0xD1);
-        ry += xpt_read(0x91);
-    }
-    xpt_read(0xD0);
-    rx /= 4;
-    ry /= 4;
-
+    int rx, ry, z;
+    if (!sample(&rx, &ry, &z)) return false;
     p->raw_x = rx;
     p->raw_y = ry;
     p->z = z;
-#if T_SWAP_XY
-    int tmp = rx; rx = ry; ry = tmp;
-#endif
-    p->x = map_axis(rx, T_X_MIN, T_X_MAX, SCREEN_W, T_INVERT_X);
-    p->y = map_axis(ry, T_Y_MIN, T_Y_MAX, SCREEN_H, T_INVERT_Y);
+    p->x = clampi((int)(s_cal.ax * rx + s_cal.bx + 0.5f), 0, SCREEN_W - 1);
+    p->y = clampi((int)(s_cal.ay * ry + s_cal.by + 0.5f), 0, SCREEN_H - 1);
     return true;
 }

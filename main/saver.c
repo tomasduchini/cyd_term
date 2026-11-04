@@ -6,6 +6,7 @@
 #include "backlight.h"
 #include "bigclock.h"
 #include "saver.h"
+#include "settings.h"
 
 #define COL_DIGIT 0xCFDF
 
@@ -30,7 +31,7 @@ void saver_enter(void)
     frame_hide();
     rain_init();  // limpia la pantalla entera
     rain_set_mask(BOX_C0, BOX_R0, BOX_C0 + BOX_W - 1, BOX_R0 + BOX_H - 1);
-    backlight_set(CONFIG_TERM_SAVER_BRIGHTNESS);
+    backlight_set(settings_get()->saver_bright);
     s_last = time(NULL);
     draw(s_last);
 }
@@ -47,5 +48,5 @@ void saver_step(void)
 
 void saver_exit(void)
 {
-    backlight_set(100);
+    backlight_set(settings_get()->brightness);
 }

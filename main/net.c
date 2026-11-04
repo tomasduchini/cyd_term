@@ -9,7 +9,6 @@
 #include "esp_event.h"
 #include "esp_netif.h"
 #include "esp_netif_sntp.h"
-#include "nvs_flash.h"
 #include "sdkconfig.h"
 #include "console.h"
 #include "net.h"
@@ -17,6 +16,8 @@
 #include "weather.h"
 #include "netmon.h"
 #include "provision.h"
+#include "settings.h"
+#include "esp_timer.h"
 
 #define BIT_CONNECTED BIT0
 #define CONNECT_TIMEOUT_MS 30000  // sin conexion en este tiempo: modo configuracion
@@ -86,17 +87,21 @@ static void net_task(void *arg)
     }
     con_type(CON_C_TEXT "ntp: hora sincronizada\n" CON_PAUSE_1S CON_PAUSE_1S CON_PAUSE_1S CON_CLEAR CON_EVENT);
 
-    const int period_s = CONFIG_TERM_WEATHER_PERIOD_MIN * 60;
     int retry_s = 10;
     while (1) {
         if (weather_update()) {
             retry_s = 10;
-            vTaskDelay(pdMS_TO_TICKS(period_s * 1000));
+            // espera en pasos de 1 s: si se cambia el intervalo en config, se aplica enseguida
+            int64_t t0 = esp_timer_get_time();
+            while (esp_timer_get_time() - t0 < (int64_t)settings_get()->weather_min * 60 * 1000000) {
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
         } else {
             snprintf(line, sizeof line, CON_C_DIM "clima: reintento en %ds\n", retry_s);
             con_type(line);
             vTaskDelay(pdMS_TO_TICKS(retry_s * 1000));
             retry_s *= 2;
+            int period_s = settings_get()->weather_min * 60;
             if (retry_s > period_s) retry_s = period_s;
         }
     }
@@ -104,13 +109,6 @@ static void net_task(void *arg)
 
 void net_start(void)
 {
-    esp_err_t err = nvs_flash_init();
-    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        err = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(err);
-
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     esp_netif_create_default_wifi_sta();

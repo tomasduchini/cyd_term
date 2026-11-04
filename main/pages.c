@@ -19,10 +19,17 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "provision.h"
+#include "stdlib.h"
+#include "settings.h"
+#include "page_cfg.h"
+#include "touch_cal.h"
 
 #define BTN_GPIO          GPIO_NUM_0
-#define BTN_LOCK_FRAMES   6   // ~180 ms sin tocar el boton para habilitar otro cambio
-#define TOUCH_LOCK_FRAMES 6
+#define SWIPE_MIN_PX    60              // desplazamiento horizontal minimo para deslizar
+#define TAP_SLOP_PX     20              // movimiento maximo para que cuente como toque
+#define TAP_MAX_US      (600 * 1000)    // duracion maxima de un toque
+#define TOUCH_UP_FRAMES 2               // frames sin presion para dar por terminado el contacto
+#define BTN_LOCK_FRAMES 6   // ~180 ms sin tocar el boton para habilitar otro cambio
 #define TRANSITION_FRAMES 14  // ~0,4 s
 
 typedef struct {
@@ -32,13 +39,15 @@ typedef struct {
     void (*step)(void);
     void (*leave)(void);
     bool status;
+    void (*touch)(int x, int y);   // toque dentro de la pagina, en pixeles; NULL si no usa
 } page_t;
 
 static const page_t s_pages[] = {
-    { "inicio",  0x07FF, home_enter, home_step, NULL,      false },  // cian
+    { "inicio",  0x2EDD, home_enter, home_step, NULL,      false },  // cian
     { "pc",      0xFD80, pc_enter,   pc_step,   NULL,      true  },  // ambar
     { "wifi",    0xE21F, wifi_enter, wifi_step, NULL,      true  },  // magenta
     { "monitor", 0x3EF0, mon_enter,  mon_step,  mon_leave, true  },  // verde
+    { "config",  0xD549, cfg_enter,  cfg_step,  NULL,      true,  cfg_touch },  // laton
 };
 #define N_PAGES      ((int)(sizeof s_pages / sizeof s_pages[0]))
 #define PAGE_HOME    0
@@ -56,10 +65,18 @@ static int64_t s_btn_down_us;
 static bool s_saver;
 static int64_t s_last_input_us;
 static bool s_transition;
-static bool s_touch_prev;
-static int s_touch_lock;
+typedef enum { G_NONE, G_DOWN, G_TAP, G_SWIPE_L, G_SWIPE_R } gesture_type_t;
 
-typedef enum { IN_NONE, IN_NEXT, IN_PREV } input_t;
+typedef struct {
+    gesture_type_t type;
+    int x, y;  // posicion del toque (G_TAP y G_DOWN)
+} gesture_t;
+
+static bool s_t_down, s_t_consumed;
+static int s_t_x0, s_t_y0, s_t_x, s_t_y, s_t_up;
+static long s_t_sx, s_t_sy;
+static int s_t_n;
+static int64_t s_t_t0;
 
 static void enter(int i)
 {
@@ -79,6 +96,7 @@ void pages_init(void)
     ESP_ERROR_CHECK(gpio_config(&cfg));
     s_last_input_us = esp_timer_get_time();
     xpt2046_init();
+    if (!touchcal_load()) touchcal_run();  // primera vez: calibrar
     enter(PAGE_MONITOR);
 }
 
@@ -112,22 +130,51 @@ static btn_ev_t button_event(void)
     return ev;
 }
 
-static input_t touch_input(void)  // flanco de toque con antirrebote; mitad izq = anterior
+// Sigue el contacto y devuelve un evento: G_DOWN al apoyar, y al soltar G_TAP o G_SWIPE_*
+static gesture_t gesture_poll(void)
 {
+    gesture_t g = { G_NONE, 0, 0 };
     xpt2046_point_t p;
-    bool down = xpt2046_read(&p);
-    input_t ev = IN_NONE;
-    if (down && !s_touch_prev && s_touch_lock == 0) {
-        ESP_LOGD("touch", "x=%d y=%d (crudo %d,%d z=%d)", p.x, p.y, p.raw_x, p.raw_y, p.z);
-        ev = (p.x < TERM_COLS * 8 / 2) ? IN_PREV : IN_NEXT;
+    bool touching = xpt2046_read(&p);
+    int64_t now = esp_timer_get_time();
+
+    if (touching) {
+        s_t_up = 0;
+        if (!s_t_down) {  // comienzo del contacto
+            s_t_down = true;
+            s_t_consumed = false;
+            s_t_x0 = s_t_x = p.x;
+            s_t_y0 = s_t_y = p.y;
+            s_t_sx = p.x;
+            s_t_sy = p.y;
+            s_t_n = 1;
+            s_t_t0 = now;
+            g = (gesture_t){ G_DOWN, p.x, p.y };
+        } else {
+            s_t_x = p.x;
+            s_t_y = p.y;
+            s_t_sx += p.x;
+            s_t_sy += p.y;
+            s_t_n++;
+        }
+        return g;
     }
-    if (down) {
-        s_touch_lock = TOUCH_LOCK_FRAMES;
-    } else if (s_touch_lock > 0) {
-        s_touch_lock--;
+
+    if (!s_t_down) return g;
+    if (++s_t_up < TOUCH_UP_FRAMES) return g;  // espera: una lectura suelta no corta el gesto
+    s_t_down = false;
+    if (s_t_consumed) return g;
+
+    int dx = s_t_x - s_t_x0;
+    int dy = s_t_y - s_t_y0;
+    if (abs(dx) >= SWIPE_MIN_PX && abs(dx) > 2 * abs(dy)) {
+        g.type = (dx < 0) ? G_SWIPE_L : G_SWIPE_R;
+        ESP_LOGI("touch", "deslizar %s (dx=%d dy=%d)", dx < 0 ? "izquierda" : "derecha", dx, dy);
+    } else if (abs(dx) <= TAP_SLOP_PX && abs(dy) <= TAP_SLOP_PX && now - s_t_t0 <= TAP_MAX_US) {
+        g = (gesture_t){ G_TAP, (int)(s_t_sx / s_t_n), (int)(s_t_sy / s_t_n) };
+        ESP_LOGI("touch", "toque x=%d y=%d (%d lecturas)", g.x, g.y, s_t_n);
     }
-    s_touch_prev = down;
-    return ev;
+    return g;
 }
 
 static void go_to(int i, bool leave_current)
@@ -147,6 +194,7 @@ bool pages_busy(void)
 
 void pages_step(void)
 {
+    settings_step();  // guardado diferido de los ajustes
     if (s_transition) {
         s_transition = term_transition_step();
         return;
@@ -160,19 +208,18 @@ void pages_step(void)
         vTaskDelay(pdMS_TO_TICKS(800));
         prov_request_restart();
     }
-    input_t in = (b == BTN_SHORT) ? IN_NEXT : IN_NONE;
-    input_t t = touch_input();  // se lee siempre, para mantener el estado del flanco
-    if (in == IN_NONE) in = t;
+    gesture_t g = gesture_poll();  // siempre, para seguir el contacto aunque no se use
 
     int64_t now = esp_timer_get_time();
-    if (in != IN_NONE) s_last_input_us = now;
+    if (b != BTN_NONE || g.type != G_NONE) s_last_input_us = now;
 
     if (s_saver) {
         if (con_take_event()) s_cur = PAGE_HOME;  // al despertar, va a inicio
-        if (in != IN_NONE) {                      // cualquier entrada solo despierta
+        if (b == BTN_SHORT || g.type == G_DOWN) {  // despierta al apoyar el dedo
+            if (g.type == G_DOWN) s_t_consumed = true;  // ese contacto no hace nada mas
             s_saver = false;
             saver_exit();
-            go_to(s_cur, false);                  // el leave ya se hizo al entrar al salvapantallas
+            go_to(s_cur, false);  // el leave ya se hizo al entrar al salvapantallas
         } else {
             saver_step();
         }
@@ -183,22 +230,31 @@ void pages_step(void)
         go_to(PAGE_HOME, true);
         return;
     }
-    if (in == IN_NEXT) {
+    if (b == BTN_SHORT || g.type == G_SWIPE_L) {
         go_to((s_cur + 1) % N_PAGES, true);
         return;
     }
-    if (in == IN_PREV) {
+    if (g.type == G_SWIPE_R) {
         go_to((s_cur + N_PAGES - 1) % N_PAGES, true);
         return;
+    }
+    if (g.type == G_TAP && s_pages[s_cur].touch) {
+        s_pages[s_cur].touch(g.x, g.y);
     }
 
     if (s_pages[s_cur].step) s_pages[s_cur].step();
 
-#if CONFIG_TERM_SAVER_TIMEOUT_S > 0
-    if (now - s_last_input_us > (int64_t)CONFIG_TERM_SAVER_TIMEOUT_S * 1000000) {
+    int saver_min = settings_get()->saver_min;
+    if (saver_min > 0 && now - s_last_input_us > (int64_t)saver_min * 60 * 1000000) {
         if (s_pages[s_cur].leave) s_pages[s_cur].leave();
         s_saver = true;
         saver_enter();
     }
-#endif
+}
+
+
+void pages_redraw(void)
+{
+    s_last_input_us = esp_timer_get_time();  // el tiempo en la pantalla modal no cuenta como inactividad
+    enter(s_cur);
 }

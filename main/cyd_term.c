@@ -18,6 +18,7 @@
 #include "page_mon.h"
 #include "pcstat.h"
 #include "freertos/task.h"
+#include "settings.h"
 
 #define LCD_HOST     SPI2_HOST
 #define PIN_SCLK     14
@@ -37,6 +38,7 @@ static const char *TAG = "term";
 
 void app_main(void) {
 	backlight_init(PIN_BL);
+    settings_init();  // NVS y ajustes guardados: hacen falta antes de prender la pantalla
 
 	spi_bus_config_t bus = { .sclk_io_num = PIN_SCLK, .mosi_io_num = PIN_MOSI,
 			.miso_io_num = PIN_MISO, .quadwp_io_num = -1, .quadhd_io_num = -1,
@@ -63,7 +65,7 @@ void app_main(void) {
 	ESP_ERROR_CHECK(esp_lcd_panel_disp_on_off(panel, true));
 	term_init(panel);
 	term_flush();            // limpia la pantalla antes de prender el backlight
-	backlight_set(100);
+    backlight_set(settings_get()->brightness);
 
 	boot_init();
 	bool booting = true;
