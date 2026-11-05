@@ -11,6 +11,8 @@ typedef struct {
     int64_t t_us;   // ultima linea recibida (esp_timer)
     float cpu, cput, gpu, gput, ram, ramu, ramt, fps;  // PC_NODATA si no vino
     float cpu_h[PC_HIST], gpu_h[PC_HIST], fps_h[PC_FPS_HIST];  // de la mas vieja a la mas nueva
+    float fps1;                 // 1 % low; PC_NODATA si no vino
+    float fps1_h[PC_FPS_HIST];
     char app[24];   // proceso de la ventana activa; "" si no vino
 } pc_t;
 

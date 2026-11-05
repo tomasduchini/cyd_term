@@ -38,6 +38,7 @@ NUM = re.compile(r"-?\d+(?:[.,]\d+)?")
 # (la 1.x usa un solo guion: -output_stdout -stop_existing_session -session_name cydterm).
 PM_ARGS = ["--output_stdout", "--stop_existing_session", "--session_name", "cydterm"]
 FT_COLUMNS = ["FrameTime", "MsBetweenPresents"]  # nombre de la columna segun la version
+LOW_WINDOW_S = 10.0  # ventana para el 1 % low: con 1 s no hay frames suficientes
 
 
 class FpsReader(threading.Thread):
@@ -82,7 +83,7 @@ class FpsReader(threading.Thread):
             now = time.monotonic()
             with self.lock:
                 self.frames.append((now, pid, app, ft))
-                while self.frames and now - self.frames[0][0] > 1.0:
+                while self.frames and now - self.frames[0][0] > LOW_WINDOW_S:
                     self.frames.popleft()
 
         if cols_idx is None:
@@ -91,13 +92,18 @@ class FpsReader(threading.Thread):
                 print("   ", l)
 
     def fps_for(self, pid):
+        """(fps promedio del ultimo segundo, 1 % low de los ultimos 10 s, app) o (None, None, None)."""
         now = time.monotonic()
         with self.lock:
-            mine = [(f[2], f[3]) for f in self.frames if f[1] == pid and now - f[0] <= 1.0]
-        if len(mine) < 2:
-            return None, None
-        mean = sum(ft for _, ft in mine) / len(mine)
-        return (1000.0 / mean if mean > 0 else None), mine[-1][0]
+            mine = [(f[0], f[2], f[3]) for f in self.frames if f[1] == pid]
+        last = [ft for t, _, ft in mine if now - t <= 1.0 and ft > 0]
+        if len(last) < 2:
+            return None, None, None
+        avg = 1000.0 / (sum(last) / len(last))
+        fts = sorted((ft for _, _, ft in mine if ft > 0), reverse=True)
+        worst = fts[:max(1, len(fts) // 100)]  # el 1 % de frames mas lentos
+        low = 1000.0 / (sum(worst) / len(worst))
+        return avg, low, mine[-1][1]
 
     def stop(self):
         if self.proc and self.proc.poll() is None:
@@ -168,9 +174,10 @@ def build_line(sensors, fps_reader=None):
 
     parts = [f"{k}={v:.1f}" for k, v in vals.items()]
     if fps_reader:
-        fps, app = fps_reader.fps_for(foreground_pid())
+        fps, low, app = fps_reader.fps_for(foreground_pid())
         if fps is not None:
             parts.append(f"fps={fps:.1f}")
+            parts.append(f"fps1={low:.1f}")
             parts.append(f"app={clean_app(app)}")
     return "PC " + ";".join(parts) + "\n"
 

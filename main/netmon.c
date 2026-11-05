@@ -23,8 +23,8 @@ static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static void push(int16_t *arr, int16_t v)
 {
     taskENTER_CRITICAL(&s_mux);
-    memmove(arr, arr + 1, (NETMON_N - 1) * sizeof arr[0]);
-    arr[NETMON_N - 1] = v;
+    memmove(arr, arr + 1, (NETMON_HIST - 1) * sizeof arr[0]);
+    arr[NETMON_HIST - 1] = v;
     s_data.seq++;
     taskEXIT_CRITICAL(&s_mux);
 }
@@ -121,7 +121,7 @@ void netmon_start(void)
     if (s_started) return;
 
     taskENTER_CRITICAL(&s_mux);
-    for (int i = 0; i < NETMON_N; i++) {
+    for (int i = 0; i < NETMON_HIST; i++) {
         s_data.gw[i] = s_data.inet[i] = s_data.rssi[i] = NETMON_NODATA;
     }
     taskEXIT_CRITICAL(&s_mux);

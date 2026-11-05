@@ -44,6 +44,7 @@
 
 static uint32_t s_seq;
 static int64_t s_last_draw;
+static bool s_low;  // muestra el 1 % low en lugar del promedio
 
 static int clampi(int v, int lo, int hi)
 {
@@ -132,16 +133,17 @@ static void draw_sep(const char *app)
         bool on = (c - FRAME_C0) % 2;
         term_put(c, ROW_SEP, on ? CH_H : ' ', on ? COL_TRACK : COL_BG, COL_BG);
     }
+    const char *mode = s_low ? " 1% low" : " fps";
     int c = FRAME_C0 + 3;
+    term_print(c, ROW_SEP, mode, COL_DIM, COL_BG);
+    c += strlen(mode);
     if (app[0]) {
-        term_print(c, ROW_SEP, " fps: ", COL_DIM, COL_BG);
-        c += 6;
+        term_print(c, ROW_SEP, ": ", COL_DIM, COL_BG);
+        c += 2;
         term_print(c, ROW_SEP, app, COL_MAIN, COL_BG);
         c += strlen(app);
-        term_put(c, ROW_SEP, ' ', COL_BG, COL_BG);
-    } else {
-        term_print(c, ROW_SEP, " fps ", COL_DIM, COL_BG);
     }
+    term_put(c, ROW_SEP, ' ', COL_BG, COL_BG);
 }
 
 static void draw_all(void)
@@ -172,20 +174,23 @@ static void draw_all(void)
     snprintf(line, sizeof line, "%-9.9s", buf);
     term_print(X_EXT, ROW_RAM, line, live ? COL_TEXT : COL_DIM, COL_BG);
 
-    // FPS
+    // FPS: promedio o 1 % low, segun el modo
+    float cur = s_low ? p.fps1 : p.fps;
+    const float *hist = s_low ? p.fps1_h : p.fps_h;
+
     draw_sep(live ? p.app : "");
-    bool has_fps = live && p.fps >= 0;
-    bignum_draw(X_FPS, ROW_FPS, has_fps ? (int)(p.fps + 0.5f) : -1, 3, has_fps ? COL_TEXT : COL_DIM);
+    bool has_fps = live && cur >= 0;
+    bignum_draw(X_FPS, ROW_FPS, has_fps ? (int)(cur + 0.5f) : -1, 3, has_fps ? COL_TEXT : COL_DIM);
 
     float top = 60, lo = -1, hi = -1;
     for (int i = 0; i < PC_FPS_HIST; i++) {
-        float v = p.fps_h[i];
+        float v = hist[i];
         if (v < 0) continue;
         if (v > top) top = v;
         if (lo < 0 || v < lo) lo = v;
         if (v > hi) hi = v;
     }
-    spark2(X_FSPK, ROW_FPS, p.fps_h, PC_FPS_HIST, top, live ? COL_MAIN : COL_DIM);
+    spark2(X_FSPK, ROW_FPS, hist, PC_FPS_HIST, top, live ? COL_MAIN : COL_DIM);
     if (hi >= 0) {
         snprintf(buf, sizeof buf, "min %d  max %d", clampi((int)lo, 0, 999), clampi((int)hi, 0, 999));
     } else {
@@ -212,4 +217,12 @@ void pc_step(void)
         s_last_draw = now;
         draw_all();
     }
+}
+
+void pc_touch(int x, int y)
+{
+    int row = y / 16;
+    if (row < ROW_SEP || row > ROW_FPS + 2) return;  // solo la zona de FPS
+    s_low = !s_low;
+    draw_all();
 }

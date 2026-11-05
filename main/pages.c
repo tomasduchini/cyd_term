@@ -44,9 +44,9 @@ typedef struct {
 
 static const page_t s_pages[] = {
     { "inicio",  0x2EDD, home_enter, home_step, NULL,      false, home_touch },  // cian
-    { "pc",      0xFD80, pc_enter,   pc_step,   NULL,      true  },  // ambar
+    { "pc",      0xFD80, pc_enter,   pc_step,   NULL,      true,  pc_touch },  // ambar
     { "wifi",    0xE21F, wifi_enter, wifi_step, NULL,      true,  wifi_touch },  // magenta
-    { "monitor", 0x3EF0, mon_enter,  mon_step,  mon_leave, true  },  // verde
+    { "monitor", 0x3EF0, mon_enter,  mon_step,  mon_leave, true,  mon_touch },  // verde
     { "config",  0xD549, cfg_enter,  cfg_step,  NULL,      true,  cfg_touch },  // laton
 };
 #define N_PAGES      ((int)(sizeof s_pages / sizeof s_pages[0]))

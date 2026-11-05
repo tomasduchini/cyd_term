@@ -7,6 +7,8 @@
 #include "console.h"
 #include "netmon.h"
 #include "page_mon.h"
+#include <limits.h>
+#include "pages.h"
 
 #define COL_BG    0x0000
 #define COL_TEXT  0xCFFB  // verde muy claro
@@ -28,9 +30,18 @@
 #define X_SPK    (FRAME_C0 + 9)   // NETMON_N celdas
 #define X_VAL    (FRAME_C0 + 34)  // 5 caracteres
 
+// Vista ampliada
+#define EXP_C0  (FRAME_C0 + 3)
+#define EXP_W   34                       // columnas del grafico
+#define EXP_R0  (FRAME_R0 + 3)           // fila superior del grafico
+#define EXP_H   8                        // filas de alto: 64 niveles
+#define EXP_AGG (NETMON_HIST / EXP_W)    // muestras por columna
+
 static uint32_t s_seq;
 static int s_frame_us;
 static int64_t s_last_sys;
+static int s_exp = -1;  // serie ampliada: 0 router, 1 inet, 2 senal; -1 = vista normal
+static const char *s_names[3] = { "router", "inet", "senal" };
 
 void mon_set_frame_us(int us)
 {
@@ -104,9 +115,138 @@ static void draw_rssi(int r, const int16_t *v)
 
 static void draw_series(const netmon_t *d)
 {
-    draw_ping(ROW_GW,  d->gw);
-    draw_ping(ROW_NET, d->inet);
-    draw_rssi(ROW_RSSI, d->rssi);
+    const int o = NETMON_HIST - NETMON_N;  // las sparklines muestran las ultimas NETMON_N
+    draw_ping(ROW_GW,  d->gw + o);
+    draw_ping(ROW_NET, d->inet + o);
+    draw_rssi(ROW_RSSI, d->rssi + o);
+}
+
+
+static void clear_inner(void)
+{
+    for (int r = FRAME_R0 + 1; r < FRAME_R1; r++) {
+        for (int c = FRAME_C0 + 1; c < FRAME_C1; c++) term_put(c, r, ' ', COL_BG, COL_BG);
+    }
+}
+
+static void draw_expanded(const netmon_t *d)
+{
+    const int16_t *v = (s_exp == 0) ? d->gw : (s_exp == 1) ? d->inet : d->rssi;
+    bool ping = s_exp < 2;
+    char buf[48], line[48];
+
+    // estadisticas de toda la ventana
+    int vmin = INT_MAX, vmax = INT_MIN, nval = 0, nloss = 0;
+    long sum = 0;
+    for (int i = 0; i < NETMON_HIST; i++) {
+        int s = v[i];
+        if (s == NETMON_NODATA) continue;
+        if (ping && s < 0) {
+            nloss++;
+            continue;
+        }
+        if (s < vmin) vmin = s;
+        if (s > vmax) vmax = s;
+        sum += s;
+        nval++;
+    }
+
+    // escala
+    int bot, top;
+    if (ping) {
+        static const int nice[] = { 20, 50, 100, 200, 500, 1000 };
+        bot = 0;
+        top = (vmax > 1000) ? vmax : 1000;
+        for (int i = 0; i < 6; i++) {
+            if (vmax <= nice[i]) {
+                top = nice[i];
+                break;
+            }
+        }
+    } else {
+        bot = -90;
+        top = -30;
+    }
+
+    // titulo y escala
+    snprintf(buf, sizeof buf, "%s  ultimos %d min", s_names[s_exp], NETMON_HIST * 2 / 60);
+    snprintf(line, sizeof line, "%-22.22s", buf);
+    term_print(EXP_C0, FRAME_R0 + 1, line, COL_TEXT, COL_BG);
+    term_print(EXP_C0 + EXP_W - 12, FRAME_R0 + 1, "toca: volver", COL_DIM, COL_BG);
+    if (ping) snprintf(buf, sizeof buf, "%d ms", top);
+    else      snprintf(buf, sizeof buf, "%d dBm", top);
+    snprintf(line, sizeof line, "%-10.10s", buf);
+    term_print(EXP_C0, FRAME_R0 + 2, line, COL_DIM, COL_BG);
+
+    // columnas
+    for (int col = 0; col < EXP_W; col++) {
+        int agg = INT_MIN, cnt = 0;
+        long acc = 0;
+        bool loss = false;
+        for (int k = 0; k < EXP_AGG; k++) {
+            int s = v[col * EXP_AGG + k];
+            if (s == NETMON_NODATA) continue;
+            if (ping && s < 0) {
+                loss = true;
+                continue;
+            }
+            if (s > agg) agg = s;
+            acc += s;
+            cnt++;
+        }
+        if (!ping && cnt) agg = (int)(acc / cnt);  // senal: promedio; pings: peor valor
+
+        int level;
+        uint16_t fg;
+        if (loss) {
+            level = EXP_H * 8;
+            fg = COL_BAD;
+        } else if (!cnt) {
+            level = -1;  // sin datos: solo la base
+            fg = COL_TRACK;
+        } else {
+            level = 1 + (agg - bot) * (EXP_H * 8 - 1) / (top - bot);
+            if (level < 1) level = 1;
+            if (level > EXP_H * 8) level = EXP_H * 8;
+            fg = ping ? ping_color(agg) : COL_MAIN;
+        }
+
+        for (int rr = 0; rr < EXP_H; rr++) {  // de abajo hacia arriba
+            int r = EXP_R0 + EXP_H - 1 - rr;
+            int part = level - rr * 8;
+            uint8_t ch;
+            if (level < 0) {
+                ch = (rr == 0) ? CH_VBAR1 : ' ';
+            } else if (part <= 0) {
+                ch = ' ';
+            } else {
+                ch = CH_VBAR1 + (part >= 8 ? 8 : part) - 1;
+            }
+            term_put(EXP_C0 + col, r, ch, ch == ' ' ? COL_BG : fg, COL_BG);
+        }
+    }
+
+    // eje de tiempo
+    term_print(EXP_C0, EXP_R0 + EXP_H, "-4 min", COL_DIM, COL_BG);
+    term_print(EXP_C0 + EXP_W - 5, EXP_R0 + EXP_H, "ahora", COL_DIM, COL_BG);
+
+    // estadisticas
+    if (nval) {
+        snprintf(buf, sizeof buf, "min %d  prom %d  max %d %s",
+                 vmin, (int)(sum / nval), vmax, ping ? "ms" : "dBm");
+    } else {
+        snprintf(buf, sizeof buf, "sin datos");
+    }
+    snprintf(line, sizeof line, "%-34.34s", buf);
+    term_print(EXP_C0, EXP_R0 + EXP_H + 1, line, COL_TEXT, COL_BG);
+
+    if (ping) {
+        int total = nval + nloss;
+        if (total) snprintf(buf, sizeof buf, "perdidos %d%%  (%d de %d)", nloss * 100 / total, nloss, total);
+        else       snprintf(buf, sizeof buf, " ");
+        snprintf(line, sizeof line, "%-34.34s", buf);
+        term_print(EXP_C0, EXP_R0 + EXP_H + 2, line, nloss ? COL_WARN : COL_DIM, COL_BG);
+    }
 }
 
 static void draw_sys(void)
@@ -140,12 +280,13 @@ static void draw_static(void)
 
 void mon_enter(void)
 {
+	s_exp = -1;
     netmon_t d;
     draw_static();
     if (netmon_get(&d)) {
         s_seq = d.seq;
     } else {  // todavia sin red: bases tenues
-        for (int i = 0; i < NETMON_N; i++) {
+        for (int i = 0; i < NETMON_HIST; i++) {
             d.gw[i] = d.inet[i] = d.rssi[i] = NETMON_NODATA;
         }
         s_seq = 0;
@@ -161,11 +302,12 @@ void mon_step(void)
     netmon_t d;
     if (netmon_get(&d) && d.seq != s_seq) {
         s_seq = d.seq;
-        draw_series(&d);
+        if (s_exp >= 0) draw_expanded(&d);
+        else            draw_series(&d);
     }
 
     int64_t now = esp_timer_get_time();
-    if (now - s_last_sys >= 1000000) {
+    if (s_exp < 0 && now - s_last_sys >= 1000000) {  // en la vista ampliada no hay fila de sistema
         s_last_sys = now;
         draw_sys();
     }
@@ -173,5 +315,24 @@ void mon_step(void)
 
 void mon_leave(void)
 {
+    s_exp = -1;
     con_hide();
+}
+
+
+void mon_touch(int x, int y)
+{
+    if (s_exp >= 0) {  // cualquier toque vuelve a la vista normal
+        s_exp = -1;
+        pages_redraw();
+        return;
+    }
+    int k = y / 16 - ROW_GW;  // 0 router, 1 inet, 2 senal
+    if (k < 0 || k > 2) return;
+    netmon_t d;
+    if (!netmon_get(&d)) return;
+    s_exp = k;
+    con_hide();
+    clear_inner();
+    draw_expanded(&d);
 }

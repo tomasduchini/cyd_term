@@ -25,6 +25,7 @@ static void parse_line(char *line)
 
     float cpu = PC_NODATA, cput = PC_NODATA, gpu = PC_NODATA, gput = PC_NODATA;
     float ram = PC_NODATA, ramu = PC_NODATA, ramt = PC_NODATA, fps = PC_NODATA;
+    float fps1 = PC_NODATA;
     char app[24] = "";
 
     char *save;
@@ -41,6 +42,7 @@ static void parse_line(char *line)
         else if (!strcmp(tok, "ramu")) ramu = v;
         else if (!strcmp(tok, "ramt")) ramt = v;
         else if (!strcmp(tok, "fps"))  fps = v;
+        else if (!strcmp(tok, "fps1")) fps1 = v;
         else if (!strcmp(tok, "app")) {
             strlcpy(app, eq + 1, sizeof app);
             for (char *q = app; *q; q++) {
@@ -59,6 +61,8 @@ static void parse_line(char *line)
     hist_push(s_data.cpu_h, PC_HIST, cpu);
     hist_push(s_data.gpu_h, PC_HIST, gpu);
     hist_push(s_data.fps_h, PC_FPS_HIST, fps);
+    s_data.fps1 = fps1;
+    hist_push(s_data.fps1_h, PC_FPS_HIST, fps1);
     s_data.t_us = now;
     s_data.seq++;
     taskEXIT_CRITICAL(&s_mux);
@@ -96,6 +100,8 @@ void pcstat_start(void)
     s_data.ram = s_data.ramu = s_data.ramt = s_data.fps = PC_NODATA;
     for (int i = 0; i < PC_HIST; i++) s_data.cpu_h[i] = s_data.gpu_h[i] = PC_NODATA;
     for (int i = 0; i < PC_FPS_HIST; i++) s_data.fps_h[i] = PC_NODATA;
+    s_data.fps1 = PC_NODATA;
+    for (int i = 0; i < PC_FPS_HIST; i++) s_data.fps1_h[i] = PC_NODATA;
     taskEXIT_CRITICAL(&s_mux);
 
     // Solo RX: la consola sigue usando el mismo UART para los logs
