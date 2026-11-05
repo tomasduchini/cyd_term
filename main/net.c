@@ -30,6 +30,13 @@ static char s_ssid[PROV_SSID_MAX], s_pass[PROV_PASS_MAX];
 static EventGroupHandle_t s_ev;
 static char s_ip[16];
 
+static volatile bool s_weather_now;
+
+void net_request_weather(void)
+{
+    s_weather_now = true;
+}
+
 // Corre en la tarea del event loop: solo levanta/baja bits, no escribe en la ventana
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -93,9 +100,11 @@ static void net_task(void *arg)
             retry_s = 10;
             // espera en pasos de 1 s: si se cambia el intervalo en config, se aplica enseguida
             int64_t t0 = esp_timer_get_time();
-            while (esp_timer_get_time() - t0 < (int64_t)settings_get()->weather_min * 60 * 1000000) {
-                vTaskDelay(pdMS_TO_TICKS(1000));
+            while (!s_weather_now &&
+                   esp_timer_get_time() - t0 < (int64_t)settings_get()->weather_min * 60 * 1000000) {
+                vTaskDelay(pdMS_TO_TICKS(250));
             }
+            s_weather_now = false;
         } else {
             snprintf(line, sizeof line, CON_C_DIM "clima: reintento en %ds\n", retry_s);
             con_type(line);

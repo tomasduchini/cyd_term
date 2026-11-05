@@ -14,7 +14,7 @@
 
 #define URL_FMT "https://api.open-meteo.com/v1/forecast?latitude=%s&longitude=%s" \
                 "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code,is_day" \
-                "&hourly=temperature_2m&forecast_hours=12" \
+                "&hourly=temperature_2m,precipitation_probability,wind_speed_10m,weather_code&forecast_hours=12" \
                 "&daily=temperature_2m_max,temperature_2m_min,sunrise,sunset&forecast_days=1" \
                 "&timezone=auto"
 
@@ -103,8 +103,8 @@ const char *weather_text(int c)
 
 bool weather_update(void)
 {
-    static char body[2048];
-    char url[384];
+    static char body[3072];
+    char url[512];
     char line[64];
     resp_t resp = { .buf = body, .len = 0, .cap = sizeof body };
     body[0] = '\0';
@@ -154,6 +154,15 @@ bool weather_update(void)
     w.code = (int)code;
     w.is_day = isday > 0.5f;
     w.first_hour = atoi(hh);
+
+    // datos horarios extra: si vienen incompletos (p. ej. null), lo que falta queda sin dato
+    float codes[WEATHER_HOURS];
+    int n = json_arr(hourly, "precipitation_probability", w.rain_h, WEATHER_HOURS);
+    for (int i = n; i < WEATHER_HOURS; i++) w.rain_h[i] = -1;
+    n = json_arr(hourly, "wind_speed_10m", w.wind_h, WEATHER_HOURS);
+    for (int i = n; i < WEATHER_HOURS; i++) w.wind_h[i] = -1;
+    n = json_arr(hourly, "weather_code", codes, WEATHER_HOURS);
+    for (int i = 0; i < WEATHER_HOURS; i++) w.code_h[i] = (i < n) ? (int8_t)codes[i] : -1;
 
     taskENTER_CRITICAL(&s_mux);
     w.seq = s_data.seq + 1;

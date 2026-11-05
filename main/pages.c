@@ -43,9 +43,9 @@ typedef struct {
 } page_t;
 
 static const page_t s_pages[] = {
-    { "inicio",  0x2EDD, home_enter, home_step, NULL,      false },  // cian
+    { "inicio",  0x2EDD, home_enter, home_step, NULL,      false, home_touch },  // cian
     { "pc",      0xFD80, pc_enter,   pc_step,   NULL,      true  },  // ambar
-    { "wifi",    0xE21F, wifi_enter, wifi_step, NULL,      true  },  // magenta
+    { "wifi",    0xE21F, wifi_enter, wifi_step, NULL,      true,  wifi_touch },  // magenta
     { "monitor", 0x3EF0, mon_enter,  mon_step,  mon_leave, true  },  // verde
     { "config",  0xD549, cfg_enter,  cfg_step,  NULL,      true,  cfg_touch },  // laton
 };

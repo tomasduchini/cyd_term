@@ -8,6 +8,7 @@
 #include "term.h"
 #include "frame.h"
 #include "page_wifi.h"
+#include "provision.h"
 
 #define COL_BG    0x0000
 #define COL_TEXT  0xF65F  // lila muy claro
@@ -24,6 +25,7 @@
 #define SCAN_EVERY_US (10 * 1000000LL)
 #define RETRY_US      (2 * 1000000LL)
 #define SCAN_MAX_US   (10 * 1000000LL)  // si no llega SCAN_DONE, se libera el estado
+#define DETAIL_US (15 * 1000000LL)
 
 // Filas
 #define STAT_R (FRAME_R0 + 1)   // estado del escaneo
@@ -50,6 +52,9 @@ static volatile bool s_scan_done;
 static bool s_scanning, s_have_data, s_handler;
 static int64_t s_next_scan_us, s_scan_start_us;
 static int s_spin;
+static bool s_sel_active;      // ficha de una red abierta
+static uint8_t s_sel_bssid[6];
+static int64_t s_sel_until;
 
 static void on_scan_done(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -116,6 +121,34 @@ static const char *auth_str(wifi_auth_mode_t m)
     }
 }
 
+static const char *auth_long(wifi_auth_mode_t m)
+{
+    switch (m) {
+    case WIFI_AUTH_OPEN:            return "abierta";
+    case WIFI_AUTH_WEP:             return "WEP";
+    case WIFI_AUTH_WPA_PSK:         return "WPA";
+    case WIFI_AUTH_WPA2_PSK:        return "WPA2";
+    case WIFI_AUTH_WPA_WPA2_PSK:    return "WPA/WPA2";
+    case WIFI_AUTH_WPA3_PSK:        return "WPA3";
+    case WIFI_AUTH_WPA2_WPA3_PSK:   return "WPA2/WPA3";
+    case WIFI_AUTH_WPA2_ENTERPRISE: return "WPA2 Enterprise";
+    default:                        return "otra";
+    }
+}
+
+static const char *phy_str(const wifi_ap_record_t *ap)
+{
+    static char s[12];
+    s[0] = '\0';
+    if (ap->phy_11b)  strcat(s, "b/");
+    if (ap->phy_11g)  strcat(s, "g/");
+    if (ap->phy_11n)  strcat(s, "n/");
+    if (ap->phy_11ax) strcat(s, "ax/");
+    size_t n = strlen(s);
+    if (n) s[n - 1] = '\0';  // saca la ultima barra
+    return s;
+}
+
 static int sig_level(int rssi)
 {
     if (rssi >= -55) return 4;
@@ -141,6 +174,72 @@ static void clear_row(int r)
     for (int c = X_MARK; c < X_SSID + SSID_W; c++) {
         term_put(c, r, ' ', COL_BG, COL_BG);
     }
+}
+
+static void draw_static(void);
+static void draw_list(void);
+static void detail_kv(int r, const char *label, const char *value)
+{
+    char line[40];
+    snprintf(line, sizeof line, "%-7s", label);
+    term_print(X_SIG, r, line, COL_DIM, COL_BG);
+    snprintf(line, sizeof line, "%-27.27s", value);
+    term_print(X_SIG + 7, r, line, COL_TEXT, COL_BG);
+}
+
+static void draw_detail(const wifi_ap_record_t *cur)  // cur: red conectada, o NULL
+{
+    char line[40], buf[40];
+    snprintf(line, sizeof line, "%-35s", "detalle de la red");
+    term_print(X_SIG, HDR_R, line, COL_DIM, COL_BG);
+    for (int i = 0; i < LIST_ROWS; i++) clear_row(LIST_R + i);
+
+    const wifi_ap_record_t *ap = NULL;
+    for (int i = 0; i < s_n; i++) {
+        if (!memcmp(s_recs[i].bssid, s_sel_bssid, 6)) {
+            ap = &s_recs[i];
+            break;
+        }
+    }
+    if (!ap) {
+        term_print(X_SIG, LIST_R + 2, "la red ya no aparece en el escaneo", COL_DIM, COL_BG);
+        term_print(X_SIG, LIST_R + 6, "toca para volver", COL_DIM, COL_BG);
+        return;
+    }
+
+    char ssid[33];
+    ssid_ascii(ap->ssid, ssid, 32);
+    term_print(X_SIG, LIST_R, ssid, COL_MAIN, COL_BG);
+
+    const uint8_t *b = ap->bssid;
+    snprintf(buf, sizeof buf, "%02x:%02x:%02x:%02x:%02x:%02x", b[0], b[1], b[2], b[3], b[4], b[5]);
+    detail_kv(LIST_R + 1, "bssid", buf);
+
+    snprintf(buf, sizeof buf, "%d  (802.11 %s)", ap->primary, phy_str(ap));
+    detail_kv(LIST_R + 2, "canal", buf);
+
+    detail_kv(LIST_R + 3, "seg", auth_long(ap->authmode));
+
+    int q = 2 * (ap->rssi + 100);  // aproximacion habitual: -50 dBm = 100 %, -100 dBm = 0 %
+    if (q < 0) q = 0;
+    if (q > 100) q = 100;
+    snprintf(buf, sizeof buf, "%d dBm  (%d%%)", ap->rssi, q);
+    detail_kv(LIST_R + 4, "senal", buf);
+
+    char saved[PROV_SSID_MAX], pass[PROV_PASS_MAX];
+    bool conn = cur && !memcmp(cur->bssid, ap->bssid, 6);
+    bool known = prov_load(saved, pass) && !strcmp(saved, (const char *)ap->ssid);
+    detail_kv(LIST_R + 5, "estado", conn ? "conectada" : known ? "guardada" : "-");
+
+    term_print(X_SIG, LIST_R + 6, "toca para volver", COL_DIM, COL_BG);
+}
+
+static void close_detail(void)
+{
+    s_sel_active = false;
+    for (int c = X_MARK; c < X_SSID + SSID_W; c++) term_put(c, HDR_R, ' ', COL_BG, COL_BG);
+    draw_static();
+    draw_list();
 }
 
 static void draw_row(int r, const wifi_ap_record_t *ap, bool mine)
@@ -204,11 +303,15 @@ static void draw_list(void)
     wifi_ap_record_t cur;
     bool connected = esp_wifi_sta_get_ap_info(&cur) == ESP_OK;
 
-    for (int i = 0; i < LIST_ROWS; i++) {
-        if (i < s_n) {
-            draw_row(LIST_R + i, &s_recs[i], connected && !memcmp(s_recs[i].bssid, cur.bssid, 6));
-        } else {
-            clear_row(LIST_R + i);
+    if (s_sel_active) {
+        draw_detail(connected ? &cur : NULL);  // se actualiza con cada escaneo
+    } else {
+        for (int i = 0; i < LIST_ROWS; i++) {
+            if (i < s_n) {
+                draw_row(LIST_R + i, &s_recs[i], connected && !memcmp(s_recs[i].bssid, cur.bssid, 6));
+            } else {
+                clear_row(LIST_R + i);
+            }
         }
     }
 
@@ -273,6 +376,7 @@ static void draw_status(int64_t now)
 
 void wifi_enter(void)
 {
+    s_sel_active = false;
     if (!s_handler) {
         ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, WIFI_EVENT_SCAN_DONE, on_scan_done, NULL));
         s_handler = true;
@@ -299,5 +403,23 @@ void wifi_step(void)
         start_scan();
     }
 
+    if (s_sel_active && now > s_sel_until) close_detail();
     draw_status(now);
+}
+
+
+void wifi_touch(int x, int y)
+{
+    int row = y / 16;
+    if (row < HDR_R || row >= LIST_R + LIST_ROWS) return;  // solo la zona de la lista
+    if (s_sel_active) {
+        close_detail();
+        return;
+    }
+    int idx = row - LIST_R;
+    if (idx < 0 || idx >= s_n) return;
+    memcpy(s_sel_bssid, s_recs[idx].bssid, 6);
+    s_sel_active = true;
+    s_sel_until = esp_timer_get_time() + DETAIL_US;
+    draw_list();
 }

@@ -13,6 +13,9 @@ typedef struct {
     char sunrise[6], sunset[6];   // "HH:MM"
     float hourly[WEATHER_HOURS];
     int first_hour;               // hora local del primer valor de hourly
+    float rain_h[WEATHER_HOURS];    // probabilidad de lluvia (%); -1 = sin dato
+    float wind_h[WEATHER_HOURS];    // viento (km/h); -1 = sin dato
+    int8_t code_h[WEATHER_HOURS];   // codigo WMO; -1 = sin dato
 } weather_t;
 
 bool weather_update(void); // true si actualizo los datos; solo tarea net

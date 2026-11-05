@@ -7,6 +7,8 @@
 #include "weather.h"
 #include "bigclock.h"
 #include <string.h>
+#include "esp_timer.h"
+#include "net.h"
 
 #define COL_BG    0x0000
 #define COL_DIGIT 0xCFDF  // cian muy claro: reloj y temperatura
@@ -67,6 +69,18 @@ static const char *s_meses[] = { "ene", "feb", "mar", "abr", "may", "jun",
 
 static time_t s_last;
 static uint32_t s_wseq;
+#define DETAIL_US          (6 * 1000000LL)
+#define REFRESH_TIMEOUT_US (15 * 1000000LL)
+
+static int s_sel = -1;        // hora del pronostico seleccionada; -1 = ninguna
+static int64_t s_sel_until;
+static bool s_refreshing;     // se pidio actualizar y todavia no llego
+static int64_t s_refresh_until;
+
+static int clampi(int v, int lo, int hi)
+{
+    return v < lo ? lo : (v > hi ? hi : v);
+}
 
 static void print_pad(int c, int r, const char *s, int width, uint16_t fg)
 {
@@ -122,6 +136,65 @@ static void draw_icon(int c, int r, int icon)
     }
 }
 
+static void draw_sun_block(const weather_t *w)
+{
+    char buf[16];
+    for (int r = LBL_R; r <= HRS_R; r++) {  // limpia lo que haya dejado el detalle
+        for (int c = SUN_C; c < SUN_C + SUN_W; c++) term_put(c, r, ' ', COL_BG, COL_BG);
+    }
+
+    // amanecer / atardecer
+    term_print(SUN_C,      LBL_R,     "amanecer",  COL_SEC,  COL_BG);
+    term_print(SUN_C + 10, LBL_R,     w->sunrise,  COL_MAIN, COL_BG);
+    term_print(SUN_C,      LBL_R + 1, "atardecer", COL_SEC,  COL_BG);
+    term_print(SUN_C + 10, LBL_R + 1, w->sunset,   COL_MAIN, COL_BG);
+
+    // barra de rango: escala fija, tramo min..max del dia y marca en la temperatura actual
+    int a = temp_px(w->t_min), b = temp_px(w->t_max), m = temp_px(w->temp);
+    for (int i = 0; i < SUN_W; i++) {
+        int c0 = i * 8, c1 = c0 + 8;
+        int s0 = a > c0 ? a : c0;
+        int s1 = b < c1 ? b : c1;
+        uint8_t ch = CH_HBAR1 + 7;
+        uint16_t fg = COL_MAIN;
+        if (s1 <= s0) {
+            fg = COL_TRACK;
+        } else if (s0 == c0 && s1 < c1) {
+            ch = CH_HBAR1 + (s1 - c0) - 1;
+        } else if (s0 > c0 && s1 == c1) {
+            ch = CH_HBARR1 + (c1 - s0) - 1;
+        }
+        term_put(SUN_C + i, BAR_R + 1, ch, fg, COL_BG);
+    }
+    int mc = m / 8;
+    if (mc > SUN_W - 1) mc = SUN_W - 1;
+    term_put(SUN_C + mc, BAR_R + 1, CH_MARK, COL_DIGIT, COL_BG);
+
+    snprintf(buf, sizeof buf, "min %.0fC", w->t_min);
+    print_pad(SUN_C, HRS_R, buf, SUN_W, COL_SEC);
+    snprintf(buf, sizeof buf, "max %.0fC", w->t_max);
+    term_print(SUN_C + SUN_W - strlen(buf), HRS_R, buf, COL_SEC, COL_BG);
+}
+
+static void draw_detail(const weather_t *w, int i)
+{
+    char buf[32];
+    const char *cond = (w->code_h[i] >= 0) ? weather_text(w->code_h[i]) : "";
+    snprintf(buf, sizeof buf, "%02d:00 %s", (w->first_hour + i) % 24, cond);
+    print_pad(SUN_C, LBL_R, buf, SUN_W, COL_DIGIT);
+
+    snprintf(buf, sizeof buf, "temp  %7.1fC", w->hourly[i]);
+    print_pad(SUN_C, LBL_R + 1, buf, SUN_W, COL_MAIN);
+
+    if (w->rain_h[i] >= 0) snprintf(buf, sizeof buf, "lluvia %6.0f%%", w->rain_h[i]);
+    else                   snprintf(buf, sizeof buf, "lluvia      --");
+    print_pad(SUN_C, LBL_R + 2, buf, SUN_W, COL_MAIN);
+
+    if (w->wind_h[i] >= 0) snprintf(buf, sizeof buf, "viento %3.0fkm/h", w->wind_h[i]);
+    else                   snprintf(buf, sizeof buf, "viento      --");
+    print_pad(SUN_C, LBL_R + 3, buf, SUN_W, COL_MAIN);
+}
+
 static void draw_weather(void)
 {
     weather_t w;
@@ -142,7 +215,7 @@ static void draw_weather(void)
     draw_icon(ICON_C, CLK_R, icon_for(w.code, w.is_day));
     snprintf(buf, sizeof buf, "%.1fC", w.temp);
     print_center(R_C, CLK_R + 3, buf, R_W, COL_DIGIT);
-    print_center(R_C, CLK_R + 4, weather_text(w.code), R_W, COL_SEC);
+    print_center(R_C, CLK_R + 4, s_refreshing ? "actualizando" : weather_text(w.code), R_W, COL_SEC);
 
     // pronostico: 12 barras angostas de 2 celdas (16 niveles)
     float lo = w.hourly[0], hi = w.hourly[0];
@@ -153,7 +226,7 @@ static void draw_weather(void)
     }
     for (int i = 0; i < WEATHER_HOURS; i++) {
         int level = (hi > lo) ? 1 + (int)((w.hourly[i] - lo) / (hi - lo) * 15.0f + 0.5f) : 8;
-        uint16_t fg = (i == hot) ? COL_HOT : COL_MAIN;
+        uint16_t fg = (i == s_sel) ? COL_DIGIT : (i == hot) ? COL_HOT : COL_MAIN;
         term_put(BAR_C + i, BAR_R + 1, vbar_glyph(level), fg, COL_BG);
         term_put(BAR_C + i, BAR_R,     vbar_glyph(level - 8), fg, COL_BG);
     }
@@ -162,38 +235,10 @@ static void draw_weather(void)
         term_print(BAR_C + i, HRS_R, buf, COL_SEC, COL_BG);
     }
 
-    // amanecer / atardecer
-    term_print(SUN_C,      LBL_R,     "amanecer",  COL_SEC,  COL_BG);
-    term_print(SUN_C + 10, LBL_R,     w.sunrise,   COL_MAIN, COL_BG);
-    term_print(SUN_C,      LBL_R + 1, "atardecer", COL_SEC,  COL_BG);
-    term_print(SUN_C + 10, LBL_R + 1, w.sunset,    COL_MAIN, COL_BG);
-
-    // barra de rango: escala fija, tramo min..max del dia y marca en la temperatura actual
-    int a = temp_px(w.t_min), b = temp_px(w.t_max), m = temp_px(w.temp);
-    for (int i = 0; i < SUN_W; i++) {
-        int c0 = i * 8, c1 = c0 + 8;
-        int s0 = a > c0 ? a : c0;          // interseccion del tramo con la celda
-        int s1 = b < c1 ? b : c1;
-        uint8_t ch = CH_HBAR1 + 7;         // celda completa
-        uint16_t fg = COL_MAIN;
-        if (s1 <= s0) {
-            fg = COL_TRACK;                // fuera del tramo: pista
-        } else if (s0 == c0 && s1 < c1) {
-            ch = CH_HBAR1 + (s1 - c0) - 1; // el tramo termina dentro de la celda
-        } else if (s0 > c0 && s1 == c1) {
-            ch = CH_HBARR1 + (c1 - s0) - 1; // el tramo empieza dentro de la celda
-        }
-        term_put(SUN_C + i, BAR_R + 1, ch, fg, COL_BG);
-    }
-    int mc = m / 8;
-    if (mc > SUN_W - 1) mc = SUN_W - 1;
-    term_put(SUN_C + mc, BAR_R + 1, CH_MARK, COL_DIGIT, COL_BG);
-
-    snprintf(buf, sizeof buf, "min %.0fC", w.t_min);
-    print_pad(SUN_C, HRS_R, buf, SUN_W, COL_SEC);
-    snprintf(buf, sizeof buf, "max %.0fC", w.t_max);
-    term_print(SUN_C + SUN_W - strlen(buf), HRS_R, buf, COL_SEC, COL_BG);
+    if (s_sel >= 0) draw_detail(&w, s_sel);
+    else            draw_sun_block(&w);
 }
+
 static void draw(time_t now)
 {
     struct tm tm;
@@ -225,6 +270,8 @@ void home_enter(void)
     s_last = time(NULL);
     draw(s_last);
     s_wseq = weather_get(&w) ? w.seq : 0;
+    s_sel = -1;
+    s_refreshing = false;
     draw_weather();
 }
 
@@ -239,6 +286,42 @@ void home_step(void)
     weather_t w;
     if (weather_get(&w) && w.seq != s_wseq) {
         s_wseq = w.seq;
+        s_refreshing = false;
+        draw_weather();
+    }
+
+    int64_t now_us = esp_timer_get_time();
+    if (s_sel >= 0 && now_us > s_sel_until) {
+        s_sel = -1;
+        draw_weather();
+    }
+    if (s_refreshing && now_us > s_refresh_until) {
+        s_refreshing = false;
+        draw_weather();
+    }
+}
+
+
+void home_touch(int x, int y)
+{
+    weather_t w;
+    if (!weather_get(&w)) return;
+    int col = x / 8, row = y / 16;
+    int64_t now = esp_timer_get_time();
+
+    // barras del pronostico, con una celda de tolerancia alrededor
+    if (row >= BAR_R - 1 && row <= HRS_R && col >= BAR_C - 1 && col <= BAR_C + WEATHER_HOURS) {
+        int i = clampi(col - BAR_C, 0, WEATHER_HOURS - 1);
+        s_sel = (s_sel == i) ? -1 : i;
+        s_sel_until = now + DETAIL_US;
+        draw_weather();
+        return;
+    }
+    // icono o temperatura: actualizar ya
+    if (col >= R_C && col < R_C + R_W && row >= CLK_R && row <= CLK_R + 4) {
+        s_refreshing = true;
+        s_refresh_until = now + REFRESH_TIMEOUT_US;
+        net_request_weather();
         draw_weather();
     }
 }
