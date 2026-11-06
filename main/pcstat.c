@@ -19,8 +19,35 @@ static void hist_push(float *h, int n, float v)
     h[n - 1] = v;
 }
 
+static void parse_info(char *s)  // "cpu=...;gpu=...;ram=..."
+{
+    char cpu[24] = "", gpu[24] = "", ram[24] = "";
+    char *save;
+    for (char *tok = strtok_r(s, ";", &save); tok; tok = strtok_r(NULL, ";", &save)) {
+        char *eq = strchr(tok, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *dst = !strcmp(tok, "cpu") ? cpu : !strcmp(tok, "gpu") ? gpu : !strcmp(tok, "ram") ? ram : NULL;
+        if (!dst) continue;
+        strlcpy(dst, eq + 1, 24);
+        for (char *q = dst; *q; q++) {
+            if (*q < 0x20 || *q > 0x7E) *q = '?';  // nada de glifos propios
+        }
+    }
+    taskENTER_CRITICAL(&s_mux);
+    if (cpu[0]) strlcpy(s_data.cpu_name, cpu, sizeof s_data.cpu_name);
+    if (gpu[0]) strlcpy(s_data.gpu_name, gpu, sizeof s_data.gpu_name);
+    if (ram[0]) strlcpy(s_data.ram_name, ram, sizeof s_data.ram_name);
+    taskEXIT_CRITICAL(&s_mux);
+}
+
 static void parse_line(char *line)
 {
+    if (strncmp(line, "PCI ", 4) == 0) {  // modelos de hardware: no son metricas
+        parse_info(line + 4);
+        return;
+    }
+
     if (strncmp(line, "PC ", 3) != 0) return;
 
     float cpu = PC_NODATA, cput = PC_NODATA, gpu = PC_NODATA, gput = PC_NODATA;

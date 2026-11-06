@@ -23,6 +23,9 @@
 #include "settings.h"
 #include "page_cfg.h"
 #include "touch_cal.h"
+#include "page_apps.h"
+#include "app_timer.h"
+#include "backlight.h"
 
 #define BTN_GPIO          GPIO_NUM_0
 #define SWIPE_MIN_PX    60              // desplazamiento horizontal minimo para deslizar
@@ -47,6 +50,7 @@ static const page_t s_pages[] = {
     { "pc",      0xFD80, pc_enter,   pc_step,   NULL,      true,  pc_touch },  // ambar
     { "wifi",    0xE21F, wifi_enter, wifi_step, NULL,      true,  wifi_touch },  // magenta
     { "monitor", 0x3EF0, mon_enter,  mon_step,  mon_leave, true,  mon_touch },  // verde
+    { "apps",    0x4BFF, apps_enter, apps_step, apps_leave, true,  apps_touch },  // azul
     { "config",  0xD549, cfg_enter,  cfg_step,  NULL,      true,  cfg_touch },  // laton
 };
 #define N_PAGES      ((int)(sizeof s_pages / sizeof s_pages[0]))
@@ -65,6 +69,55 @@ static int64_t s_btn_down_us;
 static bool s_saver;
 static int64_t s_last_input_us;
 static bool s_transition;
+// Alarma del temporizador: recuadro sobre cualquier pagina
+#define ALERT_BLINK_US (400 * 1000)
+#define ALERT_MAX_US   (120 * 1000000LL)
+#define ALERT_C0 8
+#define ALERT_C1 31
+#define ALERT_R0 5
+#define ALERT_R1 9
+
+static bool s_alert;
+static int64_t s_alert_t0;
+static int s_alert_phase = -1;
+
+static void alert_draw(bool on)
+{
+    uint16_t fg = on ? 0xFD80 : 0x8BA9;
+    for (int r = ALERT_R0; r <= ALERT_R1; r++) {
+        for (int c = ALERT_C0; c <= ALERT_C1; c++) {
+            uint8_t ch = ' ';
+            bool top = r == ALERT_R0, bot = r == ALERT_R1, left = c == ALERT_C0, right = c == ALERT_C1;
+            if (top && left)       ch = 0x84;  // ┌
+            else if (top && right) ch = 0x85;  // ┐
+            else if (bot && left)  ch = 0x86;  // └
+            else if (bot && right) ch = 0x87;  // ┘
+            else if (top || bot)   ch = 0x88;  // ─
+            else if (left || right) ch = 0x89; // │
+            term_put(c, r, ch, ch == ' ' ? 0x0000 : fg, 0x0000);
+        }
+    }
+    term_print(ALERT_C0 + 4, ALERT_R0 + 1, "tiempo cumplido", fg, 0x0000);
+    term_print(ALERT_C0 + 4, ALERT_R0 + 3, "toca para cerrar", 0x8BA9, 0x0000);
+}
+
+static void alert_step(int64_t now)
+{
+    int phase = (int)((now - s_alert_t0) / ALERT_BLINK_US) % 2;
+    if (phase == s_alert_phase) return;
+    s_alert_phase = phase;
+    alert_draw(phase == 0);
+    backlight_set(phase == 0 ? settings_get()->brightness : 15);
+}
+
+void pages_redraw(void);
+
+static void alert_close(void)
+{
+    s_alert = false;
+    backlight_set(settings_get()->brightness);
+    pages_redraw();
+}
 typedef enum { G_NONE, G_DOWN, G_TAP, G_SWIPE_L, G_SWIPE_R } gesture_type_t;
 
 typedef struct {
@@ -189,7 +242,7 @@ static void go_to(int i, bool leave_current)
 
 bool pages_busy(void)
 {
-    return s_transition;
+    return s_transition || s_alert;  // en la alarma la consola espera: pisaria el recuadro
 }
 
 void pages_step(void)
@@ -212,6 +265,25 @@ void pages_step(void)
 
     int64_t now = esp_timer_get_time();
     if (b != BTN_NONE || g.type != G_NONE) s_last_input_us = now;
+
+    // Temporizador: se revisa en todas las paginas y tambien en el salvapantallas
+    if (!s_alert && timer_take_expired()) {
+        if (s_saver) {
+            s_saver = false;
+            saver_exit();
+            enter(s_cur);  // la pagina queda debajo del recuadro
+        }
+        s_alert = true;
+        s_alert_t0 = now;
+        s_alert_phase = -1;
+    }
+    if (s_alert) {
+        alert_step(now);
+        bool close = b == BTN_SHORT || g.type == G_DOWN || now - s_alert_t0 > ALERT_MAX_US;
+        if (g.type == G_DOWN) s_t_consumed = true;  // ese toque solo cierra la alarma
+        if (close) alert_close();
+        return;
+    }
 
     if (s_saver) {
         if (con_take_event()) s_cur = PAGE_HOME;  // al despertar, va a inicio

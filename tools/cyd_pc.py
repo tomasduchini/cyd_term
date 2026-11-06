@@ -23,6 +23,9 @@ import subprocess
 import threading
 from ctypes import wintypes
 
+import json
+import winreg
+
 LHM_URL = "http://localhost:8085/data.json"
 
 # Por cada clave: (grupo, texto) que se buscan en la ruta del sensor; gana el primero que aparece.
@@ -39,6 +42,63 @@ NUM = re.compile(r"-?\d+(?:[.,]\d+)?")
 PM_ARGS = ["--output_stdout", "--stop_existing_session", "--session_name", "cydterm"]
 FT_COLUMNS = ["FrameTime", "MsBetweenPresents"]  # nombre de la columna segun la version
 LOW_WINDOW_S = 10.0  # ventana para el 1 % low: con 1 s no hay frames suficientes
+
+INFO_EVERY_S = 30  # cada cuanto se reenvian los modelos (por si la placa se reinicio)
+
+
+def short_cpu(name):
+    s = re.sub(r"\((R|TM)\)", "", name, flags=re.I)
+    s = re.sub(r"\b\d+-Core\b|\bProcessor\b|\bCPU\b|@.*$|with .*$", "", s, flags=re.I)
+    s = re.sub(r"^\s*(AMD|Intel)\s+", "", s)
+    return " ".join(s.split())
+
+
+def short_gpu(name):
+    s = re.sub(r"\((R|TM)\)", "", name, flags=re.I)
+    s = re.sub(r"^\s*(AMD|NVIDIA|Intel)\s+", "", s)
+    s = re.sub(r"^(Radeon|GeForce)\s+", "", s)
+    return " ".join(s.split())
+
+
+def hw_info():
+    """Modelos de CPU, GPU y RAM, ya acortados. Lo que no se pueda leer, se omite."""
+    info = {}
+    try:
+        key = r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key) as k:
+            info["cpu"] = short_cpu(winreg.QueryValueEx(k, "ProcessorNameString")[0])
+    except OSError:
+        pass
+
+    ps = ("$g = Get-CimInstance Win32_VideoController | Select-Object Name,AdapterRAM; "
+          "$m = Get-CimInstance Win32_PhysicalMemory | "
+          "Select-Object Capacity,ConfiguredClockSpeed,Speed,SMBIOSMemoryType; "
+          "@{gpu=@($g); ram=@($m)} | ConvertTo-Json -Compress -Depth 3")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True,
+                             text=True, timeout=20, creationflags=subprocess.CREATE_NO_WINDOW).stdout
+        data = json.loads(out)
+        gpus = [g for g in data.get("gpu") or [] if g.get("Name") and "Basic" not in g["Name"]]
+        if gpus:
+            g = max(gpus, key=lambda g: g.get("AdapterRAM") or 0)
+            info["gpu"] = short_gpu(g["Name"])
+        mods = data.get("ram") or []
+        if mods:
+            gb = round(sum(int(m.get("Capacity") or 0) for m in mods) / 2**30)
+            types = {20: "DDR", 21: "DDR2", 24: "DDR3", 26: "DDR4", 34: "DDR5"}
+            kind = types.get(mods[0].get("SMBIOSMemoryType"), "")
+            mhz = mods[0].get("ConfiguredClockSpeed") or mods[0].get("Speed") or 0
+            info["ram"] = " ".join(x for x in (f"{gb}GB", kind, str(mhz) if mhz else "") if x)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return info
+
+
+def info_line(info):
+    def clean(v):  # sin separadores del protocolo, solo ASCII, 20 caracteres
+        v = re.sub(r"[;=\r\n]", " ", v).encode("ascii", "ignore").decode()
+        return v.strip()[:20]
+    return "PCI " + ";".join(f"{k}={clean(v)}" for k, v in info.items()) + "\n"
 
 
 class FpsReader(threading.Thread):
@@ -212,6 +272,9 @@ def main():
         ap.error("falta el puerto, p. ej. COM3")
 
     psutil.cpu_percent(interval=None)  # la primera lectura siempre da 0
+    info = hw_info()
+    print("Hardware:", info)
+    last_info = 0.0
     fps_reader = None
     if args.presentmon:
         fps_reader = FpsReader(args.presentmon)
@@ -221,6 +284,9 @@ def main():
     print(f"Enviando a {args.port}. Ctrl+C para salir.")
     try:
         while True:
+            if time.monotonic() - last_info > INFO_EVERY_S:
+                ser.write(info_line(info).encode("ascii"))
+                last_info = time.monotonic()
             line = build_line(lhm_sensors(), fps_reader)
             ser.write(line.encode("ascii"))
             ser.reset_input_buffer()  # descarta los logs que manda el ESP32

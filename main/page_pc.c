@@ -41,6 +41,8 @@
 #define X_FSPK  (FRAME_C0 + 18)   // sparkline de FPS, 2 celdas de alto
 #define X_STAT  (FRAME_C0 + 22)
 #define STAT_W  16
+#define X_NAME  (FRAME_C0 + 24)   // modelos: a la derecha de las sparklines
+#define NAME_W  14
 
 static uint32_t s_seq;
 static int64_t s_last_draw;
@@ -173,6 +175,14 @@ static void draw_all(void)
     }
     snprintf(line, sizeof line, "%-9.9s", buf);
     term_print(X_EXT, ROW_RAM, line, live ? COL_TEXT : COL_DIM, COL_BG);
+
+    // modelos de hardware (llegan por separado, cada 30 s)
+    snprintf(line, sizeof line, "%-*.*s", NAME_W, NAME_W, p.cpu_name);
+    term_print(X_NAME, ROW_CPU_H, line, COL_DIM, COL_BG);
+    snprintf(line, sizeof line, "%-*.*s", NAME_W, NAME_W, p.gpu_name);
+    term_print(X_NAME, ROW_GPU_H, line, COL_DIM, COL_BG);
+    snprintf(line, sizeof line, "%-*.*s", NAME_W, NAME_W, p.ram_name);
+    term_print(X_NAME, ROW_RAM + 1, line, COL_DIM, COL_BG);
 
     // FPS: promedio o 1 % low, segun el modo
     float cur = s_low ? p.fps1 : p.fps;

@@ -79,3 +79,13 @@ void bignum_draw(int c, int r, int value, int ndigits, uint16_t fg)
         big_digit(c + 4 * j, r, d, fg);
     }
 }
+
+void bigclock_draw_pair(int c, int r, int a, int b, bool colon_on, uint16_t fg)
+{
+    big_digit(c,      r, (a / 10) % 10, fg);
+    big_digit(c + 4,  r, a % 10, fg);
+    big_colon(c + 8,  r, colon_on, fg);
+    big_digit(c + 10, r, (b / 10) % 10, fg);
+    big_digit(c + 14, r, b % 10, fg);
+}
+

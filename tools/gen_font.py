@@ -162,6 +162,105 @@ ICONS = [
     ]),
 ]
 
+# Iconos de las apps (mismo formato que los del clima). El orden tiene que coincidir con
+# la tabla s_apps de page_apps.c.
+APP_ICONS = [
+    ("cronometro", [
+        "......####......",
+        ".......##.......",
+        ".....######.....",
+        "...##......##...",
+        "..#..........#..",
+        ".#.....#......#.",
+        ".#.....#......#.",
+        "#......#.......#",
+        "#......####....#",
+        "#..............#",
+        ".#............#.",
+        ".#............#.",
+        "..#..........#..",
+        "...##......##...",
+        ".....######.....",
+        "................",
+    ]),
+    ("temporizador", [
+        ".##############.",
+        ".##############.",
+        "..#..........#..",
+        "..#..........#..",
+        "...#.######.#...",
+        "....#.####.#....",
+        ".....#.##.#.....",
+        "......#..#......",
+        "......#..#......",
+        ".....#....#.....",
+        "....#..##..#....",
+        "...#..####..#...",
+        "..#.########.#..",
+        "..#..........#..",
+        ".##############.",
+        ".##############.",
+    ]),
+    ("calendario", [
+        "................",
+        "...##......##...",
+        ".##############.",
+        ".##############.",
+        ".#............#.",
+        ".#.#.#.#.#.#..#.",
+        ".#............#.",
+        ".#.#.#.#.#.#..#.",
+        ".#............#.",
+        ".#.#.#.#.#.#..#.",
+        ".#............#.",
+        ".#.#.#.#.#.#..#.",
+        ".#............#.",
+        ".##############.",
+        "................",
+        "................",
+    ]),
+    ("musica", [
+        "................",
+        "......########..",
+        "......########..",
+        "......#......#..",
+        "......#......#..",
+        "......#......#..",
+        "......#......#..",
+        "......#......#..",
+        "......#......#..",
+        "......#......#..",
+        "...####...####..",
+        "..#####..#####..",
+        "..#####..#####..",
+        "...###....###...",
+        "................",
+        "................",
+    ]),
+    ("juegos", [
+        "................",
+        "................",
+        "................",
+        "................",
+        "...##########...",
+        "..############..",
+        ".#####.#####.##.",
+        ".###...###.####.",
+        ".#####.#####.##.",
+        ".##############.",
+        ".#####....#####.",
+        ".####......####.",
+        "..##........##..",
+        "................",
+        "................",
+        "................",
+    ]),
+]
+
+# Codigos libres para los tiles de las apps: 0x01..0x1F son caracteres de control (nunca se
+# imprimen como texto) y 0x95..0x9F no los usa nadie
+APP_CODES = list(range(0x01, 0x20)) + list(range(0x95, 0xA0))
+
 def icon_tiles(name, art):
     if len(art) != 16 or any(len(row) != 16 for row in art):
         sys.exit(f"Icono '{name}': tiene que ser de 16x16")
@@ -232,6 +331,25 @@ for i, (name, art) in enumerate(ICONS):
 
 for i, g in enumerate(CELLS):
     table[CELL_BASE + i] = g
+
+app_codes = []
+for i, (name, art) in enumerate(APP_ICONS):
+    codes = APP_CODES[i * 8:(i + 1) * 8]
+    if len(codes) < 8:
+        sys.exit("No quedan codigos libres para mas iconos de apps")
+    for code, tile in zip(codes, icon_tiles(name, art)):
+        table[code] = tile
+    app_codes.append(codes)
+
+with open("main/app_icons.h", "w") as f:
+    f.write("// Generado por tools/gen_font.py: tiles de los iconos de apps (4x2, por filas)\n")
+    f.write("#pragma once\n#include <stdint.h>\n\n")
+    f.write(f"#define APP_ICON_COUNT {len(APP_ICONS)}\n\n")
+    f.write("static const uint8_t app_icon_tiles[APP_ICON_COUNT][8] = {\n")
+    for (name, _), codes in zip(APP_ICONS, app_codes):
+        f.write("    {" + ", ".join(f"0x{c:02X}" for c in codes) + f"}},  // {name}\n")
+    f.write("};\n")
+print("main/app_icons.h generado")
 
 with open(DST, "w") as f:
     f.write("// Generado por tools/gen_font.py desde unscii-16 (dominio publico)\n")

@@ -14,6 +14,7 @@ typedef struct {
     float fps1;                 // 1 % low; PC_NODATA si no vino
     float fps1_h[PC_FPS_HIST];
     char app[24];   // proceso de la ventana activa; "" si no vino
+    char cpu_name[24], gpu_name[24], ram_name[24];   // modelos ("" si no llegaron)
 } pc_t;
 
 void pcstat_start(void);
