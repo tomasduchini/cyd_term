@@ -32,6 +32,12 @@
 #define DAS_US  (180 * 1000)  // demora antes de repetir al mantener
 #define ARR_US  (60 * 1000)   // repeticion lateral
 #define SOFT_US (40 * 1000)   // bajada rapida
+#define HELP_R      (FRAME_R0 + 3)   // fila del boton "como jugar"
+#define HELP_BTN_W  12
+#define BOX_C0      (FRAME_C0 + 4)   // recuadro de ayuda
+#define BOX_C1      (FRAME_C0 + 35)
+#define BOX_R0      (FRAME_R0 + 2)
+#define BOX_R1      (FRAME_R0 + 12)
 
 // 0 = vacio; 1..7 = I J L O S T Z
 static const uint16_t PIECE_COL[8] = { 0x0000, 0x07FF, 0x033F, 0xFC00, 0xFFE0, 0x07E0, 0xB01F, 0xF800 };
@@ -60,7 +66,7 @@ static bool s_hi_loaded;
 static int64_t s_last_fall;
 static int s_hold_zone;
 static int64_t s_hold_t0, s_hold_last;
-
+static bool s_help;  // recuadro "como jugar" abierto
 // ---------- record ----------
 
 static void load_hi(void)
@@ -296,15 +302,65 @@ static void draw_static(void)
         term_put(c0, r, CH_V, COL_DIM, COL_BG);
         term_put(c1, r, CH_V, COL_DIM, COL_BG);
     }
-    static const char *hints[] = { "izquierda", " mover", "derecha", " mover", "centro arr",
-                                   " rotar", "centro aba", " bajar", "boot: caer" };
-    for (int i = 0; i < 9; i++) term_print(HINT_C, FRAME_R0 + 3 + i, hints[i], COL_DIM, COL_BG);
+    term_print(HINT_C, HELP_R, "[como jugar]", COL_MAIN, COL_BG);
+}
+
+static bool in_help_btn(int x, int y)
+{
+    int c = x / 8, r = y / 16;
+    return r >= HELP_R - 1 && r <= HELP_R + 1 && c >= HINT_C && c < HINT_C + HELP_BTN_W;
+}
+
+static void draw_help(void)
+{
+    static const char *keys[] = { "tocar izquierda", "tocar derecha", "mantener",
+                                  "centro arriba", "centro abajo", "boton boot" };
+    static const char *vals[] = { "mover", "mover", "se repite",
+                                  "rotar", "bajar rapido", "caer de golpe" };
+
+    for (int r = BOX_R0; r <= BOX_R1; r++) {
+        for (int c = BOX_C0; c <= BOX_C1; c++) {
+            uint8_t ch = ' ';
+            bool top = r == BOX_R0, bot = r == BOX_R1, left = c == BOX_C0, right = c == BOX_C1;
+            if (top && left)        ch = CH_TL;
+            else if (top && right)  ch = CH_TR;
+            else if (bot && left)   ch = CH_BL;
+            else if (bot && right)  ch = CH_BR;
+            else if (top || bot)    ch = CH_H;
+            else if (left || right) ch = CH_V;
+            term_put(c, r, ch, ch == ' ' ? COL_BG : COL_MAIN, COL_BG);
+        }
+    }
+    term_print(BOX_C0 + 11, BOX_R0 + 1, "como jugar", COL_TEXT, COL_BG);
+    for (int i = 0; i < 6; i++) {
+        term_print(BOX_C0 + 2,  BOX_R0 + 3 + i, keys[i], COL_DIM, COL_BG);
+        term_print(BOX_C0 + 18, BOX_R0 + 3 + i, vals[i], COL_TEXT, COL_BG);
+    }
+    term_print(BOX_C0 + 8, BOX_R1 - 1, "toca para volver", COL_DIM, COL_BG);
+}
+
+static void open_help(void)
+{
+    if (s_state == S_PLAY) s_state = S_PAUSE;
+    s_help = true;
+    s_hold_zone = Z_NONE;
+    draw_help();
+}
+
+static void close_help(void)
+{
+    s_help = false;
+    for (int r = BOX_R0; r <= BOX_R1; r++) {  // limpiar el recuadro
+        for (int c = BOX_C0; c <= BOX_C1; c++) term_put(c, r, ' ', COL_BG, COL_BG);
+    }
+    draw_static();  // borde del tablero y boton; el resto se redibuja en cada frame
 }
 
 // ---------- interfaz con el menu de juegos ----------
 
 void tetris_enter(void)
 {
+    s_help = false;
     if (!s_hi_loaded) load_hi();
     if (s_state == S_PLAY) s_state = S_PAUSE;  // al volver, en pausa
     s_hold_zone = Z_NONE;
@@ -321,6 +377,15 @@ void tetris_leave(void)
 void tetris_input(int type, int x, int y)
 {
     int64_t now = esp_timer_get_time();
+
+    if (s_help) {  // con la ayuda abierta, un toque o el boton solo la cierran
+        if (type == PG_DOWN || type == PG_BUTTON) close_help();
+        return;
+    }
+    if (type == PG_DOWN && in_help_btn(x, y)) {
+        open_help();
+        return;
+    }
 
     if (s_state != S_PLAY) {  // cualquier toque o el boton: empezar o seguir
         if (type == PG_DOWN || type == PG_BUTTON) {
@@ -353,6 +418,7 @@ void tetris_input(int type, int x, int y)
 void tetris_step(void)
 {
     int64_t now = esp_timer_get_time();
+    if (s_help) return;  // no dibujar encima del recuadro
 
     if (s_state == S_PLAY) {
         // mantener apretado: repetir movimiento o bajar rapido
