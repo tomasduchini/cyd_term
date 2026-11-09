@@ -22,6 +22,13 @@ static esp_lcd_panel_handle_t s_panel;
 static uint16_t *s_buf[NBUF];
 static int s_buf_idx;
 static SemaphoreHandle_t s_buf_sem;
+static int s_cv_c0 = -1, s_cv_r0, s_cv_c1, s_cv_r1;  // region de pixeles; c0 = -1: ninguna
+static uint16_t *s_cv_buf[2];
+
+static bool in_canvas(int c, int r)
+{
+    return s_cv_c0 >= 0 && c >= s_cv_c0 && c <= s_cv_c1 && r >= s_cv_r0 && r <= s_cv_r1;
+}
 
 typedef struct {
     uint8_t ch;
@@ -128,7 +135,7 @@ void term_flush(void)
     for (int r = 0; r < TERM_ROWS; r++) {
         for (int c = 0; c < TERM_COLS; c++) {
             if (cells[r][c].dirty) {
-                draw_cell(c, r);
+                if (!in_canvas(c, r)) draw_cell(c, r);  // la region de pixeles la dibuja su dueño
                 cells[r][c].dirty = false;
             }
         }
@@ -186,4 +193,51 @@ bool term_transition_step(void)
         return false;
     }
     return true;
+}
+
+void term_canvas_set(int c0, int r0, int c1, int r1)
+{
+    s_cv_c0 = c0;
+    s_cv_r0 = r0;
+    s_cv_c1 = c1;
+    s_cv_r1 = r1;
+}
+
+void term_canvas_release(void)
+{
+    if (s_cv_c0 < 0) return;
+    for (int r = s_cv_r0; r <= s_cv_r1; r++) {
+        for (int c = s_cv_c0; c <= s_cv_c1; c++) cells[r][c].dirty = true;
+    }
+    s_cv_c0 = -1;
+}
+
+static void wait_idle(void)  // espera que terminen todas las transferencias en curso
+{
+    for (int i = 0; i < NBUF; i++) xSemaphoreTake(s_buf_sem, portMAX_DELAY);
+    for (int i = 0; i < NBUF; i++) xSemaphoreGive(s_buf_sem);
+}
+
+void term_canvas_draw(term_canvas_fn fn)
+{
+    if (s_cv_c0 < 0) return;
+    for (int k = 0; k < 2; k++) {
+        if (!s_cv_buf[k]) {
+            s_cv_buf[k] = heap_caps_malloc(TERM_COLS * CELL_W * CELL_H * sizeof(uint16_t), MALLOC_CAP_DMA);
+            if (!s_cv_buf[k]) return;
+        }
+    }
+    int w = (s_cv_c1 - s_cv_c0 + 1) * CELL_W;
+    int h = (s_cv_r1 - s_cv_r0 + 1) * CELL_H;
+    int x0 = s_cv_c0 * CELL_W;
+
+    wait_idle();  // los buffers del frame anterior pueden seguir en vuelo
+    for (int y = 0, k = 0; y < h; y += CELL_H, k ^= 1) {
+        if (y >= 2 * CELL_H) wait_idle();  // antes de reusar un buffer de franja
+        uint16_t *b = s_cv_buf[k];
+        fn(b, 0, y, w, CELL_H);
+        xSemaphoreTake(s_buf_sem, portMAX_DELAY);  // lo devuelve el callback al terminar
+        int y0 = s_cv_r0 * CELL_H + y;
+        esp_lcd_panel_draw_bitmap(s_panel, x0, y0, x0 + w, y0 + CELL_H, b);
+    }
 }

@@ -6,6 +6,8 @@
 #include "pages.h"
 #include "game_tetris.h"
 #include "game_snake.h"
+#include "game_dino.h"
+#include "game_invaders.h"
 #include "games.h"
 
 #define COL_BG   0x0000
@@ -31,8 +33,8 @@ typedef struct {
 static const game_t s_games[] = {
     { "tetris",    tetris_enter, tetris_step, tetris_input, tetris_leave },
     { "snake",     snake_enter,  snake_step,  snake_input,  snake_leave  },
-    { "dino",      NULL, NULL, NULL, NULL },
-    { "invasores", NULL, NULL, NULL, NULL },
+    { "dino",      dino_enter,   dino_step,   dino_input,   dino_leave   },
+    { "invasores", inv_enter,    inv_step,    inv_input,    inv_leave    },
 };
 #define N_GAMES ((int)(sizeof s_games / sizeof s_games[0]))
 

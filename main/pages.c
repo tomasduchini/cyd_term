@@ -285,6 +285,7 @@ void pages_step(void)
 
     // Temporizador: se revisa en todas las paginas y tambien en el salvapantallas
     if (!s_alert && timer_take_expired()) {
+        term_canvas_release();  // si un juego tenia la capa de pixeles, el recuadro tiene que verse
         if (s_saver) {
             s_saver = false;
             saver_exit();
