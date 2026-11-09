@@ -9,6 +9,8 @@
 #include "page_apps.h"
 #include "app_timer.h"
 #include "app_calendar.h"
+#include "app_music.h"
+#include "games.h"
 
 #define COL_BG    0x0000
 #define COL_TEXT  0xDF3F
@@ -28,15 +30,16 @@ typedef struct {
     void (*enter)(void);
     void (*step)(void);
     void (*touch)(int x, int y);
+    void (*leave)(void);   // opcional: al cerrar la app o abandonar la pagina
 } app_t;
 
 // Mismo orden que APP_ICONS en tools/gen_font.py
 static const app_t s_apps[] = {
-    { "cronometro",   sw_enter, sw_step, sw_touch },
-    { "temporizador", tm_enter, tm_step, tm_touch },
-    { "calendario",   cal_enter, cal_step, cal_touch },
-    { "musica",       NULL,     NULL,    NULL     },
-    { "juegos",       NULL,     NULL,    NULL     },
+    { "cronometro",   sw_enter,    sw_step,    sw_touch,    NULL        },
+    { "temporizador", tm_enter,    tm_step,    tm_touch,    NULL        },
+    { "calendario",   cal_enter,   cal_step,   cal_touch,   NULL        },
+    { "musica",       mus_enter,   mus_step,   mus_touch,   NULL        },
+    { "juegos",       games_enter, games_step, games_touch, games_leave },
 };
 #define N_APPS ((int)(sizeof s_apps / sizeof s_apps[0]))
 _Static_assert(N_APPS == APP_ICON_COUNT, "s_apps y APP_ICONS tienen que coincidir");
@@ -72,6 +75,12 @@ static void draw_launcher(void)
     for (int i = 0; i < N_APPS; i++) draw_tile(i);
 }
 
+static void close_open_app(void)
+{
+    if (s_open >= 0 && s_apps[s_open].leave) s_apps[s_open].leave();
+    s_open = -1;
+}
+
 static void open_app(int i)
 {
     s_open = i;
@@ -82,7 +91,7 @@ static void open_app(int i)
 
 void apps_enter(void)
 {
-    s_open = -1;
+    close_open_app();
     s_toast = -1;
     draw_launcher();
 }
@@ -102,7 +111,7 @@ void apps_step(void)
 
 void apps_leave(void)
 {
-    s_open = -1;  // el estado de cada app sigue en su modulo
+    close_open_app();  // el estado de cada app sigue en su modulo
 }
 
 void apps_touch(int x, int y)
@@ -111,7 +120,7 @@ void apps_touch(int x, int y)
 
     if (s_open >= 0) {
         if (row <= FRAME_R0 + 1 && col < FRAME_C0 + 14) {  // "< volver"
-            s_open = -1;
+            close_open_app();
             pages_redraw();
             return;
         }

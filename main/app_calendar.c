@@ -136,7 +136,7 @@ static void draw(void)
         int diff = (int)lround(difftime(tt, noon(now.tm_year + 1900, now.tm_mon, now.tm_mday)) / 86400.0);
         char rel[24];
         if (diff == 0)       snprintf(rel, sizeof rel, "hoy");
-        else if (diff == 1)  snprintf(rel, sizeof rel, "mañana");
+        else if (diff == 1)  snprintf(rel, sizeof rel, "manana");
         else if (diff == -1) snprintf(rel, sizeof rel, "ayer");
         else if (diff > 0)   snprintf(rel, sizeof rel, "en %d dias", diff);
         else                 snprintf(rel, sizeof rel, "hace %d dias", -diff);

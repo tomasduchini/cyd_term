@@ -26,6 +26,20 @@ from ctypes import wintypes
 import json
 import winreg
 
+import asyncio
+import unicodedata
+from datetime import datetime, timezone
+
+try:
+    from winsdk.windows.media.control import \
+        GlobalSystemMediaTransportControlsSessionManager as MediaManager
+except ImportError:
+    try:
+        from winrt.windows.media.control import \
+            GlobalSystemMediaTransportControlsSessionManager as MediaManager    
+    except ImportError:
+        MediaManager = None
+
 LHM_URL = "http://localhost:8085/data.json"
 
 # Por cada clave: (grupo, texto) que se buscan en la ruta del sensor; gana el primero que aparece.
@@ -100,7 +114,79 @@ def info_line(info):
         return v.strip()[:20]
     return "PCI " + ";".join(f"{k}={clean(v)}" for k, v in info.items()) + "\n"
 
+def ascii_text(s, n=40):
+    """Sin acentos, sin separadores del protocolo, solo ASCII."""
+    s = unicodedata.normalize("NFKD", s or "")
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[;=\r\n]", " ", s).encode("ascii", "ignore").decode()
+    return " ".join(s.split())[:n]
 
+
+def app_name(app_id):
+    s = (app_id or "").split("!")[0]
+    s = re.sub(r"\.exe$", "", s, flags=re.I).split("_")[0].split(".")[-1]
+    return ascii_text(s, 15).lower()
+
+
+async def _media_info():
+    mgr = await MediaManager.request_async()
+    s = mgr.get_current_session()
+    if s is None:
+        return None
+    props = await s.try_get_media_properties_async()
+    tl = s.get_timeline_properties()
+    status = s.get_playback_info().playback_status
+    st = 1 if int(status) == 4 else 2 if int(status) == 5 else 0  # 4 = playing, 5 = paused
+    pos = tl.position.total_seconds()
+    dur = (tl.end_time - tl.start_time).total_seconds()
+    try:  # la posicion informada tiene fecha: se corrige por el tiempo transcurrido
+        if st == 1 and tl.last_updated_time:
+            pos += (datetime.now(timezone.utc) - tl.last_updated_time).total_seconds()
+    except (TypeError, ValueError):
+        pass
+    if dur > 0:
+        pos = max(0.0, min(pos, dur))
+    return {"st": st, "pos": pos, "dur": max(dur, 0.0), "title": props.title,
+            "artist": props.artist, "app": app_name(s.source_app_user_model_id)}
+
+
+async def _media_cmd(cmd):
+    mgr = await MediaManager.request_async()
+    s = mgr.get_current_session()
+    if s is None:
+        return
+    if cmd == "play":
+        await s.try_toggle_play_pause_async()
+    elif cmd == "next":
+        await s.try_skip_next_async()
+    elif cmd == "prev":
+        await s.try_skip_previous_async()
+
+
+def media_info():
+    if MediaManager is None:
+        return None
+    try:
+        return asyncio.run(_media_info())
+    except Exception:
+        return None
+
+
+def media_cmd(cmd):
+    if MediaManager is None:
+        return
+    try:
+        asyncio.run(_media_cmd(cmd))
+    except Exception as e:
+        print("No pude ejecutar", cmd, "->", e)
+
+
+def media_line(m):
+    if not m:
+        return "PCM st=0\n"
+    return (f"PCM st={m['st']};pos={int(m['pos'])};dur={int(m['dur'])};"
+            f"title={ascii_text(m['title'])};artist={ascii_text(m['artist'])};app={m['app']}\n")
+    
 class FpsReader(threading.Thread):
     """Corre PresentMon y guarda los frametimes del ultimo segundo por proceso."""
 
@@ -283,22 +369,43 @@ def main():
     ser = open_port(args.port)
     print(f"Enviando a {args.port}. Ctrl+C para salir.")
     try:
+        buf = b""
+        next_stats = next_media = 0.0
         while True:
-            if time.monotonic() - last_info > INFO_EVERY_S:
+            now = time.monotonic()
+
+            # comandos de la placa (los logs del ESP32 se ignoran)
+            buf += ser.read(ser.in_waiting or 0)
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                line = raw.decode("ascii", "ignore").strip()
+                if line.startswith("CMD "):
+                    cmd = line[4:].strip()
+                    print("Comando:", cmd)
+                    media_cmd(cmd)
+                    next_media = 0.0  # mandar el estado nuevo enseguida
+            if len(buf) > 4096:
+                buf = b""
+
+            if now - last_info > INFO_EVERY_S:
                 ser.write(info_line(info).encode("ascii"))
-                last_info = time.monotonic()
-            line = build_line(lhm_sensors(), fps_reader)
-            ser.write(line.encode("ascii"))
-            ser.reset_input_buffer()  # descarta los logs que manda el ESP32
-            print(line.strip())
-            time.sleep(1)
+                last_info = now
+            if now >= next_stats:
+                line = build_line(lhm_sensors(), fps_reader)
+                ser.write(line.encode("ascii"))
+                print(line.strip())
+                next_stats = now + 1.0
+            if now >= next_media:
+                ser.write(media_line(media_info()).encode("ascii"))
+                next_media = now + 1.0
+
+            time.sleep(0.05)
     except KeyboardInterrupt:
         pass
     finally:
         if fps_reader:
             fps_reader.stop()
         ser.close()
-
 
 if __name__ == "__main__":
     main()

@@ -8,9 +8,10 @@
 #include "pcstat.h"
 
 #define PC_UART  UART_NUM_0  // el mismo USB del monitor
-#define PC_LINE_MAX 160
+#define PC_LINE_MAX 256
 
 static pc_t s_data;
+static pc_media_t s_media;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 
 static void hist_push(float *h, int n, float v)
@@ -41,8 +42,46 @@ static void parse_info(char *s)  // "cpu=...;gpu=...;ram=..."
     taskEXIT_CRITICAL(&s_mux);
 }
 
+static void ascii_only(char *s)
+{
+    for (; *s; s++) {
+        if (*s < 0x20 || *s > 0x7E) *s = '?';
+    }
+}
+
+static void parse_media(char *s)  // "st=1;pos=83;dur=215;title=...;artist=...;app=..."
+{
+    pc_media_t m = { 0 };
+    char *save;
+    for (char *tok = strtok_r(s, ";", &save); tok; tok = strtok_r(NULL, ";", &save)) {
+        char *eq = strchr(tok, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        const char *v = eq + 1;
+        if      (!strcmp(tok, "st"))     m.st = atoi(v);
+        else if (!strcmp(tok, "pos"))    m.pos = atoi(v);
+        else if (!strcmp(tok, "dur"))    m.dur = atoi(v);
+        else if (!strcmp(tok, "title"))  strlcpy(m.title, v, sizeof m.title);
+        else if (!strcmp(tok, "artist")) strlcpy(m.artist, v, sizeof m.artist);
+        else if (!strcmp(tok, "app"))    strlcpy(m.app, v, sizeof m.app);
+    }
+    ascii_only(m.title);
+    ascii_only(m.artist);
+    ascii_only(m.app);
+    m.t_us = esp_timer_get_time();
+
+    taskENTER_CRITICAL(&s_mux);
+    m.seq = s_media.seq + 1;
+    s_media = m;
+    taskEXIT_CRITICAL(&s_mux);
+}
+
 static void parse_line(char *line)
 {
+    if (strncmp(line, "PCM ", 4) == 0) {  // musica
+        parse_media(line + 4);
+        return;
+    }
     if (strncmp(line, "PCI ", 4) == 0) {  // modelos de hardware: no son metricas
         parse_info(line + 4);
         return;
@@ -142,4 +181,21 @@ bool pcstat_get(pc_t *out)
     *out = s_data;
     taskEXIT_CRITICAL(&s_mux);
     return out->seq != 0;
+}
+
+
+bool pcstat_get_media(pc_media_t *out)
+{
+    taskENTER_CRITICAL(&s_mux);
+    *out = s_media;
+    taskEXIT_CRITICAL(&s_mux);
+    return out->seq != 0;
+}
+
+void pcstat_send_cmd(const char *cmd)
+{
+    char buf[32];
+    // el salto de linea inicial asegura que el comando arranque en una linea nueva
+    int n = snprintf(buf, sizeof buf, "\nCMD %s\n", cmd);
+    if (n > 0 && n < (int)sizeof buf) uart_write_bytes(PC_UART, buf, n);
 }

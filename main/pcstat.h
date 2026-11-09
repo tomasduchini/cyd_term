@@ -19,3 +19,13 @@ typedef struct {
 
 void pcstat_start(void);
 bool pcstat_get(pc_t *out);  // false si todavia no llego nada
+typedef struct {
+    uint32_t seq;
+    int64_t t_us;                       // cuando llego (esp_timer)
+    int st;                             // 0 nada, 1 reproduciendo, 2 pausado
+    int pos, dur;                       // segundos; dur = 0 si la app no informa
+    char title[48], artist[48], app[16];
+} pc_media_t;
+
+bool pcstat_get_media(pc_media_t *out);  // false si nunca llego
+void pcstat_send_cmd(const char *cmd);   // "play", "next", "prev"

@@ -130,6 +130,23 @@ static int s_t_x0, s_t_y0, s_t_x, s_t_y, s_t_up;
 static long s_t_sx, s_t_sy;
 static int s_t_n;
 static int64_t s_t_t0;
+static pages_capture_fn s_capture;
+
+_Static_assert(G_DOWN == PG_DOWN && G_TAP == PG_TAP && G_SWIPE_L == PG_SWIPE_L && G_SWIPE_R == PG_SWIPE_R,
+               "los tipos de gesto tienen que coincidir con PG_*");
+
+void pages_set_capture(pages_capture_fn fn)
+{
+    s_capture = fn;
+}
+
+bool pages_touch_state(int *x, int *y)
+{
+    if (!s_t_down) return false;
+    *x = s_t_x;
+    *y = s_t_y;
+    return true;
+}
 
 static void enter(int i)
 {
@@ -301,6 +318,17 @@ void pages_step(void)
     if (con_take_event() && s_cur != PAGE_HOME) {
         go_to(PAGE_HOME, true);
         return;
+    }
+    if (s_capture) {  // un juego recibe todo: sin navegacion por deslizamiento ni por boton
+        if (g.type != G_NONE) {
+            s_capture(g.type, g.x, g.y);
+            if (g.type == G_DOWN) s_t_consumed = true;  // al soltar no genera toque ni deslizamiento
+            g.type = G_NONE;
+        }
+        if (b == BTN_SHORT) {
+            s_capture(PG_BUTTON, 0, 0);
+            b = BTN_NONE;
+        }
     }
     if (b == BTN_SHORT || g.type == G_SWIPE_L) {
         go_to((s_cur + 1) % N_PAGES, true);
